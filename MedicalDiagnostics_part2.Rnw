@@ -1,0 +1,1395 @@
+\documentclass[12pt]{mwrep}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[hidelinks]{hyperref}
+\usepackage{bbm}
+\usepackage[T1]{fontenc}
+\author{Joanna Matuszak 255762, Joanna Wojciechowicz 255747}
+\title{Microarray brain tumor diagnostics}
+\date{\today}
+
+<<include=FALSE, warning=FALSE, message=FALSE>>=
+pdf.options(encoding='CP1250')
+@
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\chapter{Introduction}
+
+In this phase of our research, we continue with further exploration of the brain tumor microarray dataset, which comprises data related to five distinct types of brain tumors. Notably, this dataset is characterized by its large number of features in oposition to a very limited number of observations. In this part, we investigate the application of selected dimensionality reduction techniques — PCA (Principal Component Analysis) and MDS (Multidimensional Scaling). We aim to visualize the outcomes of these methods. Subsequently, we integrate them into our classification assessment and contrast the results with the previous phase where feature selection was involved instead of dimensionality reduction.
+
+In our classification analysis, we consider a range of algorithms, including K Nearest Neighbors, Linear and Quadratic Discriminant Analysis, Multinomial Logistic Regression, Decision Tree, and Random Forest. For each algorithm, we perform parameter tuning utilizing leave-one-out cross-validation. We then compare our models, optimized with chosen parameters, based on misclassification errors and macro-averaged F1 score.
+
+Moving forward, we transition to cluster analysis with a focus on quality assessment. Here, we compare the outcomes of approaches involving dimensionality reduction and unsupervised feature selection using the medoids from PAM (Partitioning Around Medoids) algorithm. We evaluate the performance of selected partitioning and hierarchical methods, namely KMeans, PAM, DIANA, and AGNES. 
+
+Additionally, we offer suggestions for further research directions that could enhance our findings. Our primary research objectives revolve around comparing feature selection with dimensionality reduction in the context of classification results. We also aim to uncover underlying patterns within our dataset through cluster analysis and compare the effectiveness of clustering with dimensionality reduction and unsupervised feature selection methods. Furthermore, we explore whether the results of our cluster analysis align with predefined classes. Our research potentially leads to improved diagnostic methods that provide tumor type suggestions based on various classification and clustering approaches. This study holds promise for aiding medical professionals in making more informed decisions regarding tumor diagnosis and treatment.
+
+\chapter{Dimensionality reduction}
+
+In addressing the challenge of large dimensionality within our dataset, we opt for a dimensionality reduction approach rather than feature selection. We apply both PCA (Principal Component Analysis) and MDS (Multidimensional Scaling) methods for this purpose. Notably, since our dataset exclusively comprises quantitative features and we utilize Euclidean distance in the MDS method, it essentially aligns with PCA (with precision in terms of sign). Nonetheless, we analyze both techniques. Subsequently, we undertake classification and clustering tasks with use of the principal components derived from PCA on the learning set and the whole data respectively.
+
+
+\section{Principal Component Analysis (PCA)}
+
+<<libraries, include=FALSE, warning=FALSE, message=FALSE>>=
+library(rpart)
+library(ggplot2)
+library(caret)
+library(tidyverse)
+library(randomForest)
+library(ipred)
+library(nnet)
+library(xtable)
+library(MASS)
+library(cluster)
+library(patchwork)
+library(factoextra)
+library(corrplot)
+library(gridExtra)
+library(clValid)
+library(mclust)
+library(e1071)
+
+set.seed(42)
+@
+
+<<load, include=FALSE, cache=TRUE>>=
+# Loading the data
+load(file="brain.rda")
+data <- as.data.frame(brain.x)
+data$class <- as.factor(brain.y)
+
+data.features <- as.data.frame(brain.x)
+
+# division into test and learning set
+inLearning <- createDataPartition(y=data$class, times=1, p=2/3, list=FALSE)
+learningSet <- data[inLearning,]
+testSet <- data[-inLearning,]
+@
+
+
+<<scatterplot_og, include=FALSE, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Learning data in the original coordinate system">>=
+scatterplot_og <- ggplot(data = learningSet, aes(x = V1, y = V2, color = class)) +
+  geom_point() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Original dataset")
+scatterplot_og
+@
+
+
+<<pca_learning, include=FALSE, cache=TRUE>>=
+# PCA
+pca.results <- prcomp(learningSet[,-5598], retx=T, scale=T, center=T) 
+variance <- (pca.results$sdev ^2)/sum(pca.results$sdev^2)
+cumulative.variance <- cumsum(variance)
+
+# number of PCs to take - explain 95% variability
+n95 <- sum(cumulative.variance < 0.95)+1
+learning.features.pca <- pca.results$x[,1:n95]
+test.features.pca <- predict(pca.results, newdata=testSet[,-5598])[,1:n95]
+@
+
+<<scatterplot_pca, include=FALSE, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Learning data in the new coordinate system after PCA">>=
+#pca.results_ <- prcomp(learningSet[,c(1,2)], retx=T, center=T, scale.=T) 
+#variance_ <- (pca.results_$sdev ^2)/sum(pca.results_$sdev^2)
+#cumulative.variance_ <- cumsum(variance_)
+
+
+learningSet.pca <- as.data.frame(pca.results$x)
+learningSet.pca$class <- learningSet$class
+
+scatterplot_pca <- ggplot(data = learningSet.pca, aes(x = PC1, y = PC2, color = class)) +
+  geom_point() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Dataset after PCA")
+scatterplot_pca
+@
+
+
+
+<<var_barplot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Amount of variance explained by subsequent principal components">>=
+variance_df <- data.frame(Variables = paste0("PC", 1:30), Variance = variance)
+variance_df$Variables <- factor(variance_df$Variables, levels = variance_df$Variables)
+
+variance_barplot <- ggplot(variance_df, aes(x = Variables, y = Variance)) +
+  geom_bar(stat = "identity", fill="steelblue", alpha=0.8) +
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title = "Barplot of variances", x = "Principal Component", y = "variance")
+variance_barplot
+@
+
+
+
+<<cumvar_barplot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Cumulative amount of variance explained by first n components">>=
+cumvariance_df <- data.frame(Variables = paste0("",1:30), Variance = cumulative.variance)
+cumvariance_df$Variables <- factor(cumvariance_df$Variables, levels = cumvariance_df$Variables)
+
+cumvariance_barplot <- ggplot(cumvariance_df, aes(x = Variables, y = Variance)) +
+  geom_bar(stat = "identity", fill="steelblue", alpha=0.8) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Cumulative barplot of variances", x = "n", y = "cumulative variance")
+cumvariance_barplot
+@
+
+<<eigenvalues, echo=FALSE, results='asis', include=FALSE>>=
+eigenvalues <- get_eigenvalue(pca.results)
+
+xtable(eigenvalues, caption="Eigenvalues of the covariance matrix and variances of principal components", label="fig:eigenvalues")
+@
+
+
+<<contrib1_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Contribution of 10 most important variables to PC1">>=
+# contribution of variables to PC1
+# fviz_contrib(pca.results, choice="var", axes=1)
+fviz_contrib(pca.results, choice="var", axes=1, top=10) # 10 most important variables
+@
+
+<<contrib2_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Contribution of 10 most important variables to PC2">>=
+# contribution of variables to PC1
+# fviz_contrib(pca.results, choice="var", axes=1)
+fviz_contrib(pca.results, choice="var", axes=2, top=10) # 10 most important variables
+@
+
+
+<<fmla, include=FALSE, cache=TRUE>>=
+df <- data.frame(learning.features.pca)
+xnam <- colnames(df)
+df$class <- factor(learningSet[,5598])
+(fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+@
+
+In PCA, we extract the initial principal components that collectively explain 95\% of the total data variability. Initially, we partition the data into learning and test sets, conducting dimensionality reduction on the learning one and apply the results on the test one. From our learning set, we extract 26 principal components, marking a significant reduction from the over 5,000 features initially present.
+
+A comparison of the variance explained by each principal component is illustrated in Figure \ref{fig:var_barplot}, where only 30 components are visible, as further components lack significant variance explanatory capability. Notably, to achieve a 95\% explanation of variability, we select the initial 26 components (\ref{fig:cumvar_barplot}). Additionally, it is noteworthy that differences in variance explainability are most pronounced in the first few components.
+
+Figure \ref{fig:contrib1_plot} showcases the features contributing most significantly to the first principal component, with feature V3260 occupying the foremost position. Similarly, for the second principal component, feature V588 emerges as pivotal (\ref{fig:contrib2_plot}).
+
+\section{Multidimensional scaling (MDS)}
+
+<<mds, include=FALSE, cache=TRUE>>=
+dissimilarities <- daisy(scale(learningSet[,-5598]), metric="euclidean")
+dis.matrix <- as.matrix(dissimilarities)
+
+mds.results <- cmdscale(dis.matrix, k=2)
+@
+
+<<scatterplot_mds, include=FALSE, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Learning data in the new coordinate system after MDS">>=
+learningSet.mds <- as.data.frame(mds.results[,1:2])
+learningSet.mds$class <- learningSet$class
+
+scatterplot_mds <- ggplot(data = learningSet.mds, aes(x = V1, y = V2, color = class)) +
+  geom_point() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Dataset after MDS")
+scatterplot_mds
+@
+
+<<scatterplots_combined, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Comparison of new coordinates after PCA and LDA">>=
+scatterplot_pca2 <- scatterplot_pca
+scatterplot_mds2 <- scatterplot_mds
+combined_plot <- scatterplot_pca2 / scatterplot_mds2 
+combined_plot
+@
+
+
+<<shepard, warning=FALSE, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Shepard diagram">>=
+# Define the range of d values
+d_min <- 21
+d_max <- 29
+
+# Initialize a vector to store stress values
+stress_vec <- numeric(d_max)
+
+# Set up the plotting layout
+n_rows <- 3
+n_cols <- 3
+plot_counter <- 1
+
+# Initialize an empty list to store ggplot objects
+plot_list <- list()
+
+# Loop through each value of d
+for (d in d_min:d_max) {
+  # Perform MDS
+  mds_k <- cmdscale(dis.matrix, k = d)
+  dist_mds_k <- dist(mds_k, method = "euclidean") 
+  
+  # Calculate stress
+  stress <- sum((dis.matrix-dist_mds_k)^2)/sum(dis.matrix^2)
+  stress_vec[d] <- stress
+  
+  # Create Shepard diagram data frame
+  shepard_data <- data.frame(
+    original = as.vector(as.matrix(dis.matrix)),
+    mds = as.vector(as.matrix(dist_mds_k))
+  )
+  
+  # Create Shepard diagram plot
+  p <- ggplot(shepard_data, aes(x = original, y = mds)) +
+    geom_point(size = 0.1, alpha = 0.6) +
+    geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+    theme(plot.title = element_text(hjust = 0.5, size=10), legend.position = "top") +  # Position the legend at the top
+    guides(color = guide_legend(title = paste("STRESS = ", signif(stress, 3)), 
+                                 nrow = 1,  # Control the number of rows in the legend
+                                 override.aes = list(size = 3)))  +
+    labs(title = paste0("d = ", d, ", STRESS = ", signif(stress, 3)),
+         x = "Original distance",
+         y = "Distance after MDS mapping")
+  
+  # Store the plot in the list
+  plot_list[[plot_counter]] <- p
+  plot_counter <- plot_counter + 1
+}
+
+# Combine the plots in a grid layout
+combined_plots <- patchwork::wrap_plots(plotlist = plot_list, ncol = n_cols) + ggtitle("Shepard Diagrams")
+
+# Display the combined plots
+combined_plots
+@
+
+
+<<stress_dim, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="STRESS value for given dimension">>=
+stress_dim_df <- data.frame(d = d_min:d_max, stress = stress_vec[d_min:d_max])
+
+# Create the plot
+stress_dim_plot <- ggplot(stress_dim_df, aes(x = d, y = stress)) +
+  geom_line(linetype = "solid") +
+  geom_point() +
+  labs(title = "STRESS vs. dimension",
+       x = "dimension (d)",
+       y = "STRESS") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(d_min, d_max, by = 1))
+stress_dim_plot
+@
+
+Subsequently, MDS is performed on our learning set, aiming to preserve the original distances between objects. Figure \ref{fig:scatterplots_combined} compares the representations obtained from MDS and PCA, revealing agreement between the two methods, with precision in terms of sign. Evaluation of MDS performance and its accuracy in preserving original distances is conducted through Figure \ref{fig:shepard}, which presents Shepard diagrams and normalized STRESS values for various dimensions. Across the 30 rows of our learning data, the reduction in STRESS value is observed to be consistent (what we can observe on the Figure \ref{fig:stress_dim}), indicative of improved preservation of original distances as we approach this number.
+
+\chapter{Clasification with dimensionality reduction}
+
+Once again, we face a problem of multiclass classification. Our investigation encompasses the following models:
+\begin{itemize}
+  \item K Nearest Neighbors,
+  \item Linear and Quadratic,
+  \item Discriminant Analysis,
+  \item Multinomial Logistic Regression,
+  \item Decision Tree,
+  \item Random Forest.
+\end{itemize}
+
+Moreover, we will compare our prior results employing feature preselection with our current approach involving dimensionality reduction.
+
+To tackle the classification task, we initially partition the data into learning (2/3) and test (1/3) sets, considering the class imbalance issue and employing stratified sampling. For parameter tuning of the chosen models, we employ leave-one-out cross-validation. Additionally, we apply data standardization before executing the PCA procedure. Following this, we refrain from standardizing the principal components to preserve the results obtained from PCA, with the expectation of achieving a meaningful separation of classes.
+
+Subsequently, upon selecting the optimal models, we proceed to compare their misclassification errors and macro-averaged F1 scores.
+
+
+\section{K Nearest Neighbors}
+We will begin our analysis with the K Nearest Neighbors (KNN) algorithm. To determine the optimal parameter k, we will compare the average misclassification errors using leave-one-out cross-validation across a range of k values, up to 10 nearest neighbors.
+
+From the figure \ref{fig:errors_knn_plot}, it is evident that as we increase the number of neighbors considered, the error generally increases. However, this trend exhibits some fluctuations. After careful examination, we identify 
+k=1 as the optimal parameter value. This choice is based on achieving the smallest misclassification error on the validation set. For k = 1 we get the smallest error on the train set but since we also have the smallest error on the validation set we will not
+consider this case as an overfitting.
+
+<<kNN_errors, include=FALSE, warning=FALSE, cache=TRUE>>=
+### kNN
+
+# Define a grid of k values to test (e.g., 1 to 10)
+k_values <- data.frame(k = 1:10)
+
+learning_nrow <- nrow(learningSet)
+
+train_control<- trainControl(method="cv", number=learning_nrow, savePredictions = TRUE)
+
+# Initialize an empty vector to store training errors
+train_errors <- numeric(length(k_values$k))
+validation_errors <- numeric(length(k_values$k))
+
+# Perform PCA and k-NN with cross-validation for each k
+for (i in seq_along(k_values$k)) {
+  print(i)
+  set.seed(123)  # Set seed for reproducibility
+  model <- train(class ~ .,                    # Replace "Class" with your response variable
+                 data = learningSet, 
+                 method = "knn",
+                 trControl = train_control,
+                 preProcess = c("center", "scale", "pca"),  # Perform centering, scaling, and PCA
+                 tuneGrid = data.frame(k = k_values$k[i]))  # Specify the current k value
+  
+  print('b')
+  validation_errors[i] <- 1 - model$results$Accuracy
+  #print(model$pred)
+  # Make predictions on the training set
+  TrainErrors <- c()
+  for (j in 1:learning_nrow) {
+    train_data <- learningSet[-j,-5598]
+    train_predictions <- predict(model, newdata = train_data)
+    train_accuracy <- sum(train_predictions == learningSet[-j,5598]) / length(train_predictions)
+    TrainErrors[j] <- 1 - train_accuracy
+  }
+  #train_predictions <- predict(model, newdata = data)
+  # Calculate training accuracy for each fold and each k
+  
+  #train_accuracy <- sum(train_predictions == data$class) / length(train_predictions)
+
+  # Calculate training accuracy and store it
+  train_errors[i] <- sum(TrainErrors) / learning_nrow
+
+}
+model$preProcess
+@
+
+<<errors_knn, include=FALSE, cache=TRUE>>=
+k <- 1:10
+errors_knn <- data.frame(t(rbind(k, train_errors, validation_errors)))
+
+errors_knn$k_values <- as.numeric(errors_knn$k)
+errors_knn$train_errors <- as.numeric(errors_knn$train_errors)
+errors_knn$validation_errors <- as.numeric(errors_knn$validation_errors)
+@
+
+
+<<errors_knn_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the kNN model with PCA">>=
+# Plot training and validation errors using ggplot2
+ggplot(errors_knn, aes(x = k_values)) +
+  geom_line(aes(y = train_errors, color = "train"), size = 1.5) +
+  geom_line(aes(y = validation_errors, color = "validation"), size = 1.5) +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  labs(title = "Misclassification error for the k−NN model with PCA",
+       x = "K",
+       y = "Error Rate") +
+  theme(plot.title = element_text(hjust = 0.5))
+@
+
+<<final_knn_model, include=FALSE, cache=TRUE>>=
+#model_knn <- knnreg(data.frame(learning.features.pca), learningSet[,5598], k = 1)
+model_knn <- ipredknn(fmla, df, k=1)
+# predictions
+learning_prediction_knn <- predict(model_knn, data.frame(learning.features.pca), type="class")
+test_prediction_knn <- predict(model_knn, data.frame(test.features.pca), type="class")
+@
+
+
+<<final_knn_errors, include=FALSE, cache=TRUE>>=
+learning_error_knn <- mean(learning_prediction_knn != learningSet[,5598])
+test_error_knn <- mean(test_prediction_knn != testSet[,5598])
+
+# confusion matrix
+learning_confusion_matrix_knn <- table(learning_prediction_knn, learningSet[,5598])
+test_confusion_matrix_knn <- table(test_prediction_knn, testSet[,5598])
+@
+
+\section{Linear Discriminant Analysis and Quadratic Discriminant Analysis}
+
+Moving forward, let's delve into two linear classification techniques: Linear Discriminant Analysis (LDA) and Quadratic Discriminant Analysis (QDA). Both methods operate under the assumption of multivariate normality within the dataset.
+
+With LDA, we assume uniform covariance matrices across all classes, whereas with QDA, we estimate individual covariance matrices for each class. Given our current approach utilizing PCA, where we are working with only 26 principal components and 30 samples in the learning set, LDA is suitable for our analysis. However, for QDA, the assumption of distinct covariance matrices for each class renders our sample size insufficient for meaningful results, as it requires a larger dataset for accurate estimation.
+
+
+
+
+<<final_lda_model, include=FALSE, warning=FALSE>>=
+model_lda <- lda (x = learning.features.pca, grouping = learningSet[,5598])
+
+# predictions
+learning_prediction_lda <- predict(model_lda, learning.features.pca)$class
+test_prediction_lda <- predict(model_lda, test.features.pca)$class
+
+# classification error
+learning_error_lda <- mean(learning_prediction_lda != learningSet[,5598])
+test_error_lda <- mean(test_prediction_lda != testSet[,5598])
+
+# confusion matrix
+learning_confusion_matrix_lda <- table(learning_prediction_lda, learningSet[,5598])
+test_confusion_matrix_lda <- table(test_prediction_lda, testSet[,5598])
+@
+
+<<boundaries_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Decision boundaries for LDA">>=
+PC1.grid <- seq(-150, 150, length.out=300)
+PC2.grid <- seq(-150, 150, length.out=300)
+PC3.grid <- seq(0, 0, 1)
+PC4.grid <- seq(0, 0, 1)
+PC5.grid <- seq(0, 0, 1)
+PC6.grid <- seq(0, 0, 1)
+PC7.grid <- seq(0, 0, 1)
+PC8.grid <- seq(0, 0, 1)
+PC9.grid <- seq(0, 0, 1)
+PC10.grid <- seq(0, 0, 1)
+PC11.grid <- seq(0, 0, 1)
+PC12.grid <- seq(0, 0, 1)
+PC13.grid <- seq(0, 0, 1)
+PC14.grid <- seq(0, 0, 1)
+PC15.grid <- seq(0, 0, 1)
+PC16.grid <- seq(0, 0, 1)
+PC17.grid <- seq(0, 0, 1)
+PC18.grid <- seq(0, 0, 1)
+PC19.grid <- seq(0, 0, 1)
+PC20.grid <- seq(0, 0, 1)
+PC21.grid <- seq(0, 0, 1)
+PC22.grid <- seq(0, 0, 1)
+PC23.grid <- seq(0, 0, 1)
+PC24.grid <- seq(0, 0, 1)
+PC25.grid <- seq(0, 0, 1)
+PC26.grid <- seq(0, 0, 1)
+
+grid  <- expand.grid(PC1=PC1.grid, 
+                     PC2=PC2.grid,
+                     PC3=PC3.grid,
+                     PC4=PC4.grid,
+                     PC5=PC5.grid,
+                     PC6=PC6.grid,
+                     PC7=PC7.grid,
+                     PC8=PC8.grid,
+                     PC9=PC9.grid,
+                     PC10=PC10.grid,
+                     PC11=PC11.grid,
+                     PC12=PC12.grid,
+                     PC13=PC13.grid,
+                     PC14=PC14.grid,
+                     PC15=PC15.grid,
+                     PC16=PC16.grid,
+                     PC17=PC17.grid,
+                     PC18=PC18.grid,
+                     PC19=PC19.grid,
+                     PC20=PC20.grid,
+                     PC21=PC21.grid,
+                     PC22=PC22.grid,
+                     PC23=PC23.grid,
+                     PC24=PC24.grid,
+                     PC25=PC25.grid,
+                     PC26=PC26.grid)
+pred.prob <- predict(model_lda, newdata=grid)$posterior
+
+prob.1 <- pred.prob[,1] - pmax(pred.prob[,2], pred.prob[,3], pred.prob[,4], pred.prob[,5])
+prob.2 <- pred.prob[,2] - pmax(pred.prob[,1], pred.prob[,3], pred.prob[,4], pred.prob[,5])
+prob.3 <- pred.prob[,3] - pmax(pred.prob[,2], pred.prob[,1], pred.prob[,4], pred.prob[,5])
+prob.4 <- pred.prob[,4] - pmax(pred.prob[,2], pred.prob[,3], pred.prob[,1], pred.prob[,5])
+prob.5 <- pred.prob[,5] - pmax(pred.prob[,2], pred.prob[,3], pred.prob[,4], pred.prob[,1])
+
+plot(learning.features.pca[,1], learning.features.pca[,2], col=learningSet$class, 
+     xlab="PC1", ylab="PC2")
+title("Decision boundaries for LDA")
+legend("topleft",legend=c("0", "1", "2", "3", "4"), col=1:5, pch="o")
+contour(PC1.grid,PC2.grid, matrix(prob.1,nrow=300), levels=0, add=T)
+contour(PC1.grid,PC2.grid, matrix(prob.2,nrow=300), levels=0, add=T)
+contour(PC1.grid,PC2.grid, matrix(prob.3,nrow=300), levels=0, add=T)
+contour(PC1.grid,PC2.grid, matrix(prob.4,nrow=300), levels=0, add=T)
+contour(PC1.grid,PC2.grid, matrix(prob.5,nrow=300), levels=0, add=T)
+grid()
+
+@
+
+
+
+\section{Multinomial Logistic Regression}
+
+Another linear model that we will discuss is Multinomial Logistic Regression, which imposes fewer assumptions on data. In case of
+this model we will not search for optimal parameters.
+
+
+<<final_mlr_model, include=FALSE, cache=TRUE>>=
+model_mlr <- multinom(fmla, data=df)
+
+# predictions
+learning_prediction_mlr <- predict(model_mlr, data.frame(learning.features.pca), type="class")
+test_prediction_mlr <- predict(model_mlr, data.frame(test.features.pca), type="class")
+
+# classification error
+learning_error_mlr <- mean(learning_prediction_mlr != learningSet[,5598])
+test_error_mlr <- mean(test_prediction_mlr != testSet[,5598])
+
+# confusion matrix
+learning_confusion_matrix_mlr <- table(learning_prediction_mlr, learningSet[,5598])
+test_confusion_matrix_mlr <- table(test_prediction_mlr, testSet[,5598])
+@
+
+
+\section{Decision Tree}
+
+Next, we explore another classification algorithm: Decision Tree. For our dataset, we initialize the Decision Tree with parameters minsplit = 1 and minbucket = 1, which are reasonable for our data.
+
+A crucial parameter to tune in Decision Trees is the complexity parameter (cp), which determines the size of the tree. We investigate cp values ranging from 0.02 to 0.2. Upon plotting the misclassification errors in Figure \ref{fig:errors_df_plot}, we observe that validation errors are minimized for cp values below 0.08. Remarkably, we discern no signs of overfitting; instances with the lowest train errors correspond to the lowest validation errors.
+
+For our final model, we opt for a complexity parameter of 0.08. A larger cp value results in a smaller tree, mitigating the risk of overfitting at the expense of increased bias. Thus, within the range of 0 to 0.08, we select the maximum value to strike a balance between model simplicity and generalization capability.
+
+<<dt_model_errors, include=FALSE>>=
+# Leave-One-Out cross validation - finding best cp parameter
+dt_model_errors <- function(cp, data){
+  errors_train <- c()
+  errors_validation <- c()
+  
+  for (i in 1:nrow(data)) {
+    train <- data[-i,]
+    validation <- data[i,]
+    
+    pca.results <- prcomp(train[,-5598], retx=T, center=T, scale.=T) 
+    variance <- (pca.results$sdev ^2)/sum(pca.results$sdev^2)
+    cumulative.variance <- cumsum(variance)
+    
+    # number of PCs to take - explain 95% variability
+    n95 <- sum(cumulative.variance < 0.95)+1
+    train.features.pca <- pca.results$x[,1:n95]
+    validation.features.pca <- predict(pca.results, newdata=validation[,-5598])[,1:n95]
+
+    df <- data.frame(train.features.pca)
+    xnam <- colnames(df)
+    df$class <- factor(train[,5598])
+    (fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+
+    model <- rpart(fmla, data=df, control = rpart.control(cp = cp, minsplit = 1, minbucket = 1))
+    
+    # predictions
+    train_prediction <- predict(model, data.frame(train.features.pca), type="class")
+    validation_prediction <- predict(model, data.frame(t(validation.features.pca)), type="class")
+    
+    # classification error
+    train_error <- mean(train_prediction != train[,5598])
+    validation_error <- mean(validation_prediction != validation[,5598])
+    
+    errors_train <- c(errors_train, train_error)
+    errors_validation <- c(errors_validation, validation_error)
+  }
+  results <- list("train_error"=mean(errors_train), "validation_error"=mean(errors_validation))
+  return(results)
+}
+@
+
+<<errors_df, include=FALSE, cache=TRUE>>=
+cps <- seq(0.02, 0.2, by=0.02)
+errors_dt <- sapply(cps, dt_model_errors, learningSet)
+errors_dt <- data.frame(t(rbind(cps, errors_dt)))
+
+errors_dt$cp <- as.numeric(errors_dt$cps)
+errors_dt$train_error <- as.numeric(errors_dt$train_error)
+errors_dt$validation_error <- as.numeric(errors_dt$validation_error)
+@
+
+<<errors_df_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the Decision Tree model with PCA">>=
+errors_dt_plot <- ggplot(data = errors_dt, aes(x = cp)) +
+  geom_line(aes(y = train_error, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation_error, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Misclassification error for the Decision Tree model with PCA", x = "cp", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = seq(min(errors_dt$cp), max(errors_dt$cp), by = 0.02))
+errors_dt_plot
+@
+
+<<final_dt, include=FALSE, cache=TRUE>>=
+cp = 0.08 # we want to avoid overfitting, we choose the highest cp for which the validation error is minimal
+# the greater cp, the smaller the tree, the risk of overfitting is lower, the bias is greater
+
+model_dt <- rpart(fmla, data=df, control = rpart.control(cp = cp, minsplit = 1, minbucket = 1))
+
+# predictions
+learning_prediction_dt <- predict(model_dt, data.frame(learning.features.pca), type="class")
+test_prediction_dt <- predict(model_dt, data.frame(test.features.pca), type="class")
+@
+
+<<final_dt_errors, include=FALSE, cache=TRUE>>=
+# classification error
+learning_error_dt <- mean(learning_prediction_dt != learningSet[,5598])
+test_error_dt <- mean(test_prediction_dt != testSet[,5598])
+
+# confusion matrix
+learning_confusion_matrix_dt <- table(learning_prediction_dt, learningSet[,5598])
+test_confusion_matrix_dt <- table(test_prediction_dt, testSet[,5598])
+@
+
+
+
+
+
+\section{Random Forest}
+
+Now, we investigate the Random Forest algorithm, the most complex among the classification methods considered. We focus on examining the influence of the ntree parameter, which denotes the number of trees in the forest.
+
+Initially, we cast a wide range to capture the appropriate range, spanning from 2 to 
+$2^{14}$. Upon analyzing the results depicted in Figure \ref{fig:errors_rf_plot}, we discern that at ntree $= 2^{10}$, the misclassification error for the validation set is minimized.
+
+Further refinement of the ntree parameter within the vicinity of this value (Figure \ref{fig:errors_rf_plot2}) reveals that ntree$=1000$
+yields the lowest misclassification error on the validation set, while also achieving a training error of 0.
+
+<<rf_model_errors, include=FALSE>>=
+# Leave-One-Out cross validation - finding best ntree parameter
+rf_model_errors <- function(ntree, data){
+  errors_train <- c()
+  errors_validation <- c()
+  print(ntree)
+  
+  for (i in 1:nrow(data)) {
+    train <- data[-i,]
+    validation <- data[i,]
+    
+    pca.results <- prcomp(train[,-5598], retx=T, center=T, scale.=T) 
+    variance <- (pca.results$sdev ^2)/sum(pca.results$sdev^2)
+    cumulative.variance <- cumsum(variance)
+    
+    # number of PCs to take - explain 95% variability
+    n95 <- sum(cumulative.variance < 0.95)+1
+    train.features.pca <- pca.results$x[,1:n95]
+    validation.features.pca <- predict(pca.results, newdata=validation[,-5598])[,1:n95]
+    
+    df <- data.frame(train.features.pca)
+    xnam <- colnames(df)
+    df$class <- factor(train[,5598])
+    (fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+    
+    model <- randomForest(fmla, data=df, ntree=ntree)
+    
+    # predictions
+    train_prediction <- predict(model, data.frame(train.features.pca), type="class")
+    validation_prediction <- predict(model, data.frame(t(validation.features.pca)), type="class")
+    
+    # classification error
+    train_error <- mean(train_prediction != train[,5598])
+    validation_error <- mean(validation_prediction != validation[,5598])
+    
+    errors_train <- c(errors_train, train_error)
+    errors_validation <- c(errors_validation, validation_error)
+  }
+  results <- list("train_error"=mean(errors_train), "validation_error"=mean(errors_validation))
+  return(results)
+}
+@
+
+<<errors_rf, include=FALSE, cache=TRUE>>=
+# looking for reasonable range
+ntree <- 2^seq(1, 14, 1)
+errors_rf <- sapply(ntree, rf_model_errors, learningSet)
+errors_rf <- data.frame(t(rbind(ntree, errors_rf)))
+
+errors_rf$ntree <- as.numeric(errors_rf$ntree)
+errors_rf$ntree_log <- seq(1, 14, 1)
+errors_rf$train_error <- as.numeric(errors_rf$train_error)
+errors_rf$validation_error <- as.numeric(errors_rf$validation_error)
+@
+
+<<errors_rf_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the Random Forest model with PCA">>=
+errors_rf_plot <- ggplot(data = errors_rf, aes(x = ntree)) +
+  geom_line(aes(y = train_error, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation_error, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Misclassification error for the Random Forest model with PCA", x = "ntree", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = ntree, trans='log2', labels = scales::math_format(2^.x, format = log2))
+errors_rf_plot
+@
+
+<<errors_rf2, include=FALSE, cache=TRUE>>=
+# looking for reasonable range
+ntree2 <- seq(200, 2000, 200)
+errors_rf2 <- sapply(ntree2, rf_model_errors, learningSet)
+errors_rf2 <- data.frame(t(rbind(ntree2, errors_rf2)))
+
+errors_rf2$ntree2 <- as.numeric(errors_rf2$ntree2)
+errors_rf2$train_error <- as.numeric(errors_rf2$train_error)
+errors_rf2$validation_error <- as.numeric(errors_rf2$validation_error)
+@
+
+<<errors_rf_plot2, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the Random Forest model with PCA">>=
+errors_rf_plot2 <- ggplot(data = errors_rf2, aes(x = ntree2)) +
+  geom_line(aes(y = train_error, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation_error, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Misclassification error for the Random Forest model with PCA", x = "ntree", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = ntree2)
+errors_rf_plot2
+@
+
+<<final_rf, include=FALSE, cache=TRUE>>=
+model_rf <- randomForest(fmla, data=df, ntree=1000)
+
+# predictions
+learning_prediction_rf <- predict(model_rf, data.frame(learning.features.pca), type="class")
+test_prediction_rf <- predict(model_rf, data.frame(test.features.pca), type="class")
+@
+
+<<final_rf_errors, include=FALSE, cache=TRUE>>=
+# classification error
+learning_error_rf <- mean(learning_prediction_rf != learningSet[,5598])
+test_error_rf <- mean(test_prediction_rf != testSet[,5598])
+
+# confusion matrix
+learning_confusion_matrix_rf <- table(learning_prediction_rf, learningSet[,5598])
+test_confusion_matrix_rf <- table(test_prediction_rf, testSet[,5598])
+@
+
+\section{Comparison of feature selection approach and
+dimensionality reduction approach}
+
+In the previous sections, we meticulously selected models and their parameters. Now, we proceed to train them on the previously generated learning set and evaluate their performance on the test set. The results of the LDA algorithm are presented in the graph (\ref{fig:boundaries_plot}). Each model's performance is compared between the current approach utilizing PCA and the previous approach involving feature preselection.
+
+Examining Table 3.1, we observe that, in terms of fitting the learning set, all models, except for Decision Tree, achieve zero learning error. The Decision Tree model exhibits a learning error of 0.1. However, our primary concern lies in the models' generalization ability, thus, we scrutinize their performance on the test set. Comparing the misclassification errors on the test set (Table 3.3), we find that all models perform well on unseen data, with Multinomial Logistic Regression leading with 0 test error.
+
+Given the class imbalance issue, we address it by evaluating the macro-averaged F1 score (Table 3.5), which considers all classes equally. Here, Multinomial Logistic Regression emerges as the top performer, while LDA yields the lowest score. Notably, Multinomial Logistic Regression not only achieves the lowest error on the test set but also demonstrates superior handling of class imbalance.
+
+Now, we compare the results across feature selection and dimensionality reduction. It's crucial to note that LDA was only performed in the PCA approach, and different parameters were tuned for Random Forest in these scenarios, making direct comparisons challenging.
+
+Comparing Tables \ref{tab:compare_tab_learning_pca} and \ref{tab:compare_tab_learning} for learning error, all models achieve zero, except for Decision Tree with PCA, which registers a 0.1 error. In Tables \ref{tab:compare_tab_test_pca} and \ref{tab:compare_tab_test}, we find that the PCA approach yields lower test error for kNN and Multinomial Logistic Regression. However, Decision Tree achieves the lowest error with the feature selection approach. Random Forest exhibits identical test errors for both PCA and feature selection approaches, but it's important to note the difference in tuned parameters.
+
+Analyzing the changes in macro-averaged F1 scores (Tables \ref{tab:compare_tab_test_f1_pca} and \ref{tab:compare_tab_test_f1}), we notice higher F1 scores for kNN and Multinomial Logistic Regression with the PCA approach. Decision Tree with PCA failed to predict one class entirely and the F1 scores for this model with feature selection and with randomly chosen features were not high. Random Forest with PCA boasts a higher F1 score compared to the second approach.
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c| } 
+\hline
+model & error (PCA) \\
+\hline
+K Nearest Neighbors & \Sexpr{learning_error_knn} \\
+Linear Discriminant Analysis & \Sexpr{learning_error_lda} \\ 
+Multinomial Logistic Regression & \Sexpr{learning_error_mlr} \\ 
+Decision Tree & \Sexpr{learning_error_dt}\\ 
+Random Forest & \Sexpr{learning_error_rf} \\ 
+\hline
+\end{tabular}
+\caption{Misclassification errors on the learning set for different classification models with PCA}
+\label{tab:compare_tab_learning_pca}
+\end{table}
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c| } 
+\hline
+ & misclassification error & misclassification error \\
+model & feature selection & no feature selection \\
+\hline
+K Nearest Neighbors & 0 & 0 \\ 
+Multinomial Logistic Regression & 0 & 0 \\ 
+Decision Tree & 0 & 0 \\ 
+Random Forest & 0 & 0 \\ 
+\hline
+\end{tabular}
+\caption{Misclassification errors on the learning set for different classification models with and without feature selection}
+\label{tab:compare_tab_learning}
+\end{table}
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c| } 
+\hline
+model & misclassification error \\
+\hline
+K Nearest Neighbors & \Sexpr{test_error_knn} \\
+Linear Discriminant Analysis & \Sexpr{test_error_lda} \\ 
+Multinomial Logistic Regression & \Sexpr{test_error_mlr} \\ 
+Decision Tree & \Sexpr{test_error_dt}\\ 
+Random Forest & \Sexpr{test_error_rf} \\ 
+\hline
+\end{tabular}
+\caption{Misclassification errors on the test set for different classification models with PCA}
+\label{tab:compare_tab_test_pca}
+\end{table}
+
+
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c| } 
+\hline
+ & misclassification error & misclassification error \\
+model & feature selection & no feature selection \\
+\hline
+K Nearest Neighbors & 0.1666667 & 0.1666667 \\ 
+Multinomial Logistic Regression & 0.0833333 & 0.0833333 \\ 
+Decision Tree & 0.25  & 0.5833333 \\ 
+Random Forest & 0.1666667 & 0.4166667 \\ 
+\hline
+\end{tabular}
+\caption{Misclassification errors on the test set for different classification models with and without feature selection.}
+\label{tab:compare_tab_test}
+\end{table}
+
+
+<<F1_func, include=FALSE>>=
+class_metrics <- function(conf_matrix, class_idx) {
+  true_positives <- conf_matrix[class_idx, class_idx]
+  false_positives <- sum(conf_matrix[, class_idx]) - true_positives
+  false_negatives <- sum(conf_matrix[class_idx, ]) - true_positives
+  
+  precision <- true_positives / (true_positives + false_positives)
+  recall <- true_positives / (true_positives + false_negatives)
+  
+  # Avoid division by zero and calculate F1 score
+  f1_score <- ifelse((precision + recall) == 0, 0, 2 * precision * recall / (precision + recall))
+  
+  return(list(precision = precision, recall = recall, f1_score = f1_score))
+}
+
+# Function to calculate macro-averaged F1 score from a confusion matrix
+macro_avg_f1_score <- function(conf_matrix) {
+  num_classes <- nrow(conf_matrix)
+  f1_scores <- numeric(num_classes)
+  
+  # Calculate F1 score for each class
+  for (class_idx in 1:num_classes) {
+    metrics <- class_metrics(conf_matrix, class_idx)
+    f1_scores[class_idx] <- metrics$f1_score
+  }
+  
+  # Calculate macro-averaged F1 score
+  macro_avg_f1 <- mean(f1_scores)
+  
+  return(macro_avg_f1)
+}
+@
+
+<<F1, cache=TRUE, include=FALSE>>=
+f1_knn <- macro_avg_f1_score(test_confusion_matrix_knn)
+f1_lda <- macro_avg_f1_score(test_confusion_matrix_lda)
+f1_mlr <- macro_avg_f1_score(test_confusion_matrix_mlr)
+f1_dt <- macro_avg_f1_score(test_confusion_matrix_dt)
+f1_rf <- macro_avg_f1_score(test_confusion_matrix_rf)
+@
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c| } 
+\hline
+model & F1 score \\
+\hline
+K Nearest Neighbors & \Sexpr{f1_knn} \\ 
+Linear Discriminant Analysis & \Sexpr{f1_lda} \\ 
+Multinomial Logistic Regression & \Sexpr{f1_mlr} \\ 
+Decision Tree & \Sexpr{f1_dt} \\ 
+Random Forest & \Sexpr{f1_rf} \\ 
+\hline
+\end{tabular}
+\caption{Macro-averaged F1 score on the test set for different models with PCA.}
+\label{tab:compare_tab_test_f1_pca}
+\end{table}
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c| } 
+\hline
+ & F1 score & F1 score \\
+model & feature selection & no feature selection \\
+\hline
+K Nearest Neighbors & 0.7933333 & 0.8333333 \\ 
+Multinomial Logistic Regression & 0.9111111  & NA \\ 
+Decision Tree & 0.6266667 & 0.4833333 \\ 
+Random Forest & 0.8111111  & 0.6333333 \\ 
+\hline
+\end{tabular}
+\caption{Macro-averaged F1 score on the test set for different models with and without feature selection}
+\label{tab:compare_tab_test_f1}
+\end{table}
+
+
+
+
+\chapter{Clustering}
+
+In this phase of our project, we are conducting clustering analysis on our data. The clustering will be done with use of both partitioning and hierarchical methods, such as:
+\begin{itemize}
+  \item K-means,
+  \item Partition Around Medoids (PAM), 
+  \item Divisive Analysis (DIANA),
+  \item Aglomerative Nesting (AGNES).
+\end{itemize}
+
+We will be exploring two different approaches. The first approach involves unsupervised feature selection utilizing the PAM algorithm. The second approach utilizes dimensionality reduction via the PCA method. We will perform the clustering as well as feature selection and dimensionality reduction on the whole dataset. 
+
+We will assess each clustering method using internal cluster validation indices, including:
+\begin{itemize}
+  \item Total Within Sum of Square,
+  \item Gap statistic,
+  \item Average silhouette width,
+  \item Connectivity,
+  \item Dunn index.
+\end{itemize}
+
+For the first three indices, we will visualize the results for various numbers of clusters on graphs. Meanwhile, connectivity and the Dunn index will help us determine the optimal number of clusters. Additionally, in case of the hierarchical methods we will visualize the results via dendrograms as well.
+
+Finally, we asses the agreement between the results of our cluster analysis and predefined classes.
+
+\section{Clustering with unsupervised feature selection}
+
+To execute unsupervised feature selection, we apply the PAM algorithm to the standardized features across all data points. We divide the data into 36 clusters and select the medoids of these clusters as our new feature set. The decision to have 36 clusters is not arbitrary. Through exploration, we discovered that in the case of dimensionality reduction applied to the entire dataset, 36 principal components are required to explain 95\% of the variance. Consequently, we opted for the same number of features in both the unsupervised feature selection and dimensionality reduction approaches.
+
+In Figure \ref{fig:kmeans_plots}, we observe the internal validation measures computed for various numbers of clusters using the k-means algorithm. Notably, the total within sum of squares decreases as the number of clusters increases. Employing the elbow rule, we approximate the optimal number of clusters to be 2 based on this measure. However, the gap statistic suggests 1 cluster as optimal, while the average silhouette index achieves its highest value with 2 clusters.
+
+Moving to the PAM algorithm (Figure \ref{fig:pam_plots}), we find conflicting indications regarding the optimal number of clusters. The gap statistic and average silhouette width favors 2 clusters, whereas the elbow method suggests 3 clusters. Moreover, the average silhouette width shows no significant fluctuation for $k \in [7, 10]$.
+
+In Figure \ref{fig:diana_plots}, the results for the DIANA method are displayed. Once again, varying indices propose different optimal numbers of clusters, either 1 or 2.
+
+For the AGNES algorithm, all three internal validation indices converge on 2 as the optimal number of clusters (\ref{fig:agnes_plots}).
+
+In most cases, the results were not consistent across different internal validation measures. We further evaluated the models using connectivity and Dunn index. From Table \ref{tab:opt_scores_tab}, we observe that the optimal number of clusters, considering connectivity, are 3, 2, 2, and 2, while for Dunn index, they are 4, 10, 10, and 2 for k-means, PAM, DIANA, and AGNES algorithms, respectively.
+
+Taking into account all the results, we find that for all methods, the majority of indices suggest 2 as the optimal number of clusters.
+
+<<features_pam, include=FALSE, cache=TRUE>>=
+# Derive dissimilarities between objects
+dissimilarities.features <- daisy(t(data.features), stand=T)
+dis.matrix.features <- as.matrix(dissimilarities.features)
+
+# Application of PAM algorithm
+features.pam <- pam(x=dis.matrix.features, diss=TRUE, k=36)
+
+# We can check which objects are cluster centers, i.e. they are representative for a given cluster
+# these are our chosen features
+ClusterCenters.names <- features.pam$medoids
+
+data.selected.features <- data.features[, c(ClusterCenters.names)]
+@
+
+%\subsection{K-means}
+
+<<results_kmeans, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_kmeans <- clValid(scale(data.selected.features), nClust = 2:10, 
+                          clMethods = c("kmeans"),  # Specify the hierarchical clustering method
+                          validation = "internal")  # Specify the validity index
+summary(results_kmeans)
+@
+
+<<kmeans_plots, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for K Means clustering">>=
+plot_wss_kmeans <- fviz_nbclust(scale(data.selected.features), FUNcluster = kmeans, method = "wss", k.max = 10) + geom_vline(xintercept = 2, linetype = 2)
+plot_gap_kmeans <- fviz_nbclust(scale(data.selected.features), FUNcluster = kmeans, method = "gap", k.max = 10)
+plot_silhouette_kmeans <- fviz_nbclust(scale(data.selected.features), FUNcluster = kmeans, method = "silhouette", k.max = 10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_kmeans <- grid.arrange(plot_wss_kmeans, plot_gap_kmeans, plot_silhouette_kmeans, ncol = 3, layout_matrix = layout)
+combined_plot_kmeans
+@
+
+
+%\subsection{Partitioning Around Medoids}
+
+<<results_pam, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_pam <- clValid(scale(data.selected.features), nClust = 2:10, 
+                       clMethods = c("pam"),  # Specify the hierarchical clustering method
+                       validation = "internal")  # Specify the validity index
+summary(results_pam)
+@
+
+<<pam_plots, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for PAM clustering">>=
+plot_wss_pam <- fviz_nbclust(scale(data.selected.features), FUNcluster = pam, method="wss", k.max=10) + geom_vline(xintercept=3, linetype=2) 
+plot_gap_pam <- fviz_nbclust(scale(data.selected.features), FUNcluster = pam, method="gap", k.max=10)
+plot_silhouette_pam <- fviz_nbclust(scale(data.selected.features), FUNcluster = pam, method="silhouette", k.max=10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_pam <- grid.arrange(plot_wss_pam, plot_gap_pam, plot_silhouette_pam, ncol = 3, layout_matrix = layout)
+combined_plot_pam
+@
+
+% \subsection{Divisive Analysis}
+<<results_diana, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_diana <- clValid(scale(data.selected.features), nClust = 2:10, 
+                         clMethods = c("diana"),  # Specify the hierarchical clustering method
+                         validation = "internal")  # Specify the validity index
+
+# Extract the optimal number of clusters based on silhouette width
+summary(results_diana)
+@
+
+
+<<diana_plots, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for DIANA clustering">>=
+plot_wss_diana <- fviz_nbclust(scale(data.selected.features), FUNcluster = hcut, hc_func = "diana", method="wss", k.max=10) + geom_vline(xintercept=2, linetype=2) # indicate K=3 as an optimal number of clusters
+plot_gap_diana <- fviz_nbclust(scale(data.selected.features), FUNcluster = hcut, hc_func = "diana", method="gap", k.max=10)
+plot_silhouette_diana <- fviz_nbclust(scale(data.selected.features), FUNcluster = hcut, hc_func = "diana", method="silhouette", k.max=10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_diana <- grid.arrange(plot_wss_diana, plot_gap_diana, plot_silhouette_diana, ncol = 3, layout_matrix = layout)
+combined_plot_diana
+@
+
+% \subsection{Aglomerative Nesting}
+<<results_agnes, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_agnes <- clValid(scale(data.selected.features), nClust = 2:10, 
+                         clMethods = c("agnes"),  # Specify the hierarchical clustering method
+                         validation = "internal")  # Specify the validity index
+
+# Extract the optimal number of clusters based on silhouette width
+summary(results_agnes)
+@
+
+
+
+<<agnes_plots, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for AGNES clustering">>=
+plot_wss_agnes <- fviz_nbclust(scale(data.selected.features), FUNcluster = hcut, hc_func = "agnes", method="wss", k.max=10) + geom_vline(xintercept=2, linetype=2) # indicate K=3 as an optimal number of clusters
+plot_gap_agnes <- fviz_nbclust(scale(data.selected.features), FUNcluster = hcut, hc_func = "agnes", method="gap", k.max=10)
+plot_silhouette_agnes <- fviz_nbclust(scale(data.selected.features), FUNcluster = hcut, hc_func = "agnes", method="silhouette", k.max=10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_agnes <- grid.arrange(plot_wss_agnes, plot_gap_agnes, plot_silhouette_agnes, ncol = 3, layout_matrix = layout)
+combined_plot_agnes
+@
+
+% additional internal indicies
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c|c|c| } 
+\hline
+method & connectivity & clusters & Dunn & clusters\\
+\hline
+K Means & 16.9333 & 3 & 0.4620 & 4 \\
+PAM & 16.7663 & 2 & 0.4745 & 10 \\
+DIANA & 14.2683 & 2 & 0.4450 & 10 \\
+AGNES & 2.9290 & 2 & 0.5571 & 2 \\
+\hline
+\end{tabular}
+\caption{Optimal scores of internal validation indicies for different clustering methods}
+\label{tab:opt_scores_tab}
+\end{table}
+
+\section{Clustering with dimensionality reduction}
+
+
+Now, we proceed with the second approach, where we conducted PCA on the entire dataset for dimensionality reduction. We extracted 36 principal components to account for 95\% of the variability.
+
+Similarly, we evaluated these models using internal indices. In Figure \ref{fig:kmeans_plots_pca}, we observe that the optimal number of clusters for all cases is 2.
+
+However, for the PAM results (Figure \ref{fig:pam_plots_pca}), each index suggests a different number of optimal clusters: 3 for total within sum of squares, 1 for gap statistic, and 9 for average silhouette width.
+
+Similarly, for DIANA (Figure \ref{fig:diana_plots_pca}), the indices propose 2, 1, and 5 as optimal cluster numbers.
+
+For AGNES (Figure \ref{fig:agnes_plots_pca}), the indices suggest 2, 4, and 10 as optimal cluster numbers.
+
+Table \ref{tab:opt_scores_tab_pca} displays the results for connectivity and Dunn index. In the case of connectivity, 2 is indicated as the optimal number of clusters, while for the Dunn index, it is 10 for k-means and DIANA, 9 for PAM, and 6 for AGNES.
+
+In summary, in clustering with dimensionality reduction, the majority of methods chose 2 as the optimal number of clusters for k-means, DIANA, and AGNES algorithms, and 9 for the PAM algorithm. However, it is important to note that the results were less consistent compared to clustering with unsupervised feature selection.
+
+% with PCA
+<<features_pca_all, include=FALSE, cache=TRUE>>=
+pca.results.all <- prcomp(data.features, retx=T, center=T, scale.=T) 
+variance.all <- (pca.results.all$sdev ^2)/sum(pca.results.all$sdev^2)
+cumulative.variance.all <- cumsum(variance.all)
+
+# 36 = number of PCs to take - explain 95% variability
+n95.all <- sum(cumulative.variance.all < 0.95)+1
+data.features.pca.all <- pca.results.all$x[,1:n95.all]
+@
+
+%\subsection{K-means}
+<<results_kmeans_pca, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_kmeans_pca <- clValid(data.features.pca.all, nClust = 2:10, 
+                          clMethods = c("kmeans"),  # Specify the hierarchical clustering method
+                          validation = "internal")  # Specify the validity index
+summary(results_kmeans_pca)
+@
+
+<<kmeans_plots_pca, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for K Means clustering with dimensionality reduction">>=
+plot_wss_kmeans_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = kmeans, method = "wss", k.max = 10) + geom_vline(xintercept = 2, linetype = 2)
+plot_gap_kmeans_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = kmeans, method = "gap", k.max = 10)
+plot_silhouette_kmeans_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = kmeans, method = "silhouette", k.max = 10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_kmeans_pca <- grid.arrange(plot_wss_kmeans_pca, plot_gap_kmeans_pca, plot_silhouette_kmeans_pca, ncol = 3, layout_matrix = layout)
+combined_plot_kmeans_pca
+@
+
+%\subsection{Partitioning Around Medoids}
+<<results_pam_pca, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_pam_pca <- clValid(data.features.pca.all, nClust = 2:10, 
+                       clMethods = c("pam"),  # Specify the hierarchical clustering method
+                       validation = "internal")  # Specify the validity index
+summary(results_pam_pca)
+@
+
+<<pam_plots_pca, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for PAM clustering with dimensionality reduction">>=
+plot_wss_pam_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = pam, method="wss", k.max=10) + geom_vline(xintercept=3, linetype=2) 
+plot_gap_pam_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = pam, method="gap", k.max=10)
+plot_silhouette_pam_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = pam, method="silhouette", k.max=10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_pam_pca <- grid.arrange(plot_wss_pam_pca, plot_gap_pam_pca, plot_silhouette_pam_pca, ncol = 3, layout_matrix = layout)
+combined_plot_pam_pca
+@
+
+%\subsection{Divisive Analysis}
+<<results_diana_pca, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_diana_pca <- clValid(data.features.pca.all, nClust = 2:10, 
+                         clMethods = c("diana"),  # Specify the hierarchical clustering method
+                         validation = "internal")  # Specify the validity index
+
+# Extract the optimal number of clusters based on silhouette width
+summary(results_diana_pca)
+@
+
+
+<<diana_plots_pca, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for DIANA clustering with dimensionality reduction">>=
+plot_wss_diana_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = hcut, hc_func = "diana", method="wss", k.max=10) + geom_vline(xintercept=2, linetype=2) # indicate K=3 as an optimal number of clusters
+plot_gap_diana_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = hcut, hc_func = "diana", method="gap", k.max=10)
+plot_silhouette_diana_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = hcut, hc_func = "diana", method="silhouette", k.max=10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_diana_pca <- grid.arrange(plot_wss_diana_pca, plot_gap_diana_pca, plot_silhouette_diana_pca, ncol = 3, layout_matrix = layout)
+combined_plot_diana_pca
+@
+
+%\subsection{Aglomerative Nesting}
+<<results_agnes_pca, include=FALSE, warning=FALSE, cache=TRUE>>=
+results_agnes_pca <- clValid(data.features.pca.all, nClust = 2:10, 
+                         clMethods = c("agnes"),  # Specify the hierarchical clustering method
+                         validation = "internal")  # Specify the validity index
+
+# Extract the optimal number of clusters based on silhouette width
+summary(results_agnes_pca)
+@
+
+
+
+<<agnes_plots_pca, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Internal validation measures for AGNES clustering with dimensionality reduction">>=
+plot_wss_agnes_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = hcut, hc_func = "agnes", method="wss", k.max=10) + geom_vline(xintercept=2, linetype=2) # indicate K=3 as an optimal number of clusters
+plot_gap_agnes_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = hcut, hc_func = "agnes", method="gap", k.max=10)
+plot_silhouette_agnes_pca <- fviz_nbclust(data.features.pca.all, FUNcluster = hcut, hc_func = "agnes", method="silhouette", k.max=10)
+
+# Define layout for the combined plot
+layout <- matrix(c(1, 2, 3), nrow = 3, byrow = TRUE)
+
+
+# Combine plots
+combined_plot_agnes_pca <- grid.arrange(plot_wss_agnes_pca, plot_gap_agnes_pca, plot_silhouette_agnes_pca, ncol = 3, layout_matrix = layout)
+combined_plot_agnes_pca
+@
+
+% additional internal indicies
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c|c|c| } 
+\hline
+method & connectivity & clusters & Dunn & clusters\\
+\hline
+K Means & 25.4464 & 2 & 0.6322 & 10 \\
+PAM & 36.0079 & 2 & 0.5612 & 9 \\
+DIANA & 18.9429 & 2 & 0.5860 & 10 \\
+AGNES & 3.0956 & 2 & 0.7417 & 6 \\
+\hline
+\end{tabular}
+\caption{Optimal scores of internal validation indicies for different clustering methods with dimensionality reduction}
+\label{tab:opt_scores_tab_pca}
+\end{table}
+
+\section{Comparison of unsupervised feature selection approach and dimensionality reduction approach}
+
+In this section, we aim to assess the agreement between the clustering results and the real classes of our data. To achieve this, we constructed models with a predefined number of clusters equal to the number of actual classes. We built these models using both unsupervised feature selection and dimensionality reduction approaches.
+
+In Figures \ref{fig:clustering_diana} and \ref{fig:clustering_agnes}, we present dendrograms for the DIANA and AGNES methods with unsupervised feature selection, while in Figures \ref{fig:clustering_diana_pca} and \ref{fig:clustering_agnes_pca}, we display dendrograms for the DIANA and AGNES methods with dimensionality reduction.
+
+After constructing the models, we compare the results with the actual classes and calculate the percentage of matched cases (refer to Table \ref{tab:matched_classes_tab}). The findings reveal that the patterns detected by the PAM algorithm align quite well with the actual classes of our data, with matched cases percentages of 73.81\% for unsupervised feature selection and 66.67\% for dimensionality reduction approach. Conversely, the results of other algorithms seem to detect patterns that do not align with the actual classes. For instance, the AGNES results align with actual classes in only about 30\% of cases. In general, the unsupervised feature selection approach resulted in higher percentage of matched cases that the dimensionality reduction one. The only exception to this rule are results for the DIANA algorithm.
+
+Upon comparing the plots of average silhouette width, we observe that the unsupervised feature selection approach yielded higher values for all compared methods. Likewise, the total within sum of square values are lower for this approach. When examining the results of connectivity and Dunn index, similar conclusions arise - the unsupervised feature selection approach leads to lower values across the board.
+
+<<clustering_kmeans, include=FALSE, cache=TRUE>>=
+# Cluster labels vs. actual class labels
+
+# kmeans
+kmeans_clustering <- kmeans(scale(data.selected.features), centers=5)
+labels.kmeans <- kmeans_clustering$cluster
+labels.real <- data$class
+
+(tab_kmeans <- table(labels.kmeans, labels.real))
+
+# partition agreement
+matchClasses(tab_kmeans)
+compareMatchedClasses(labels.kmeans, labels.real)$diag
+
+# We force each cluster to be assigned to a different class
+matchClasses(tab_kmeans, method="exact")
+compareMatchedClasses(labels.kmeans, labels.real, method="exact")$diag
+@
+
+<<clustering_pam, include=FALSE, cache=TRUE>>=
+# pam 
+pam_clustering <- pam(scale(data.selected.features), k=5)
+labels.pam <- pam_clustering$cluster
+labels.real <- data$class
+
+(tab_pam <- table(labels.pam, labels.real))
+
+# partition agreement
+matchClasses(tab_pam)
+compareMatchedClasses(labels.pam, labels.real)$diag
+
+# We force each cluster to be assigned to a different class
+matchClasses(tab_pam, method="exact")
+compareMatchedClasses(labels.pam, labels.real, method="exact")$diag
+@
+
+
+
+<<clustering_diana, warning=FALSE, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Dendrogram for DIANA clustering">>=
+# diana
+diana_clustering <- diana(scale(data.selected.features))
+# dendrogaram
+plot(diana_clustering, hang=-1, which.plot=2)
+## Cut into 2 groups:
+labels.diana <- cutree(as.hclust(diana_clustering), k = 5)
+labels.real <- data$class
+
+(tab_diana <- table(labels.diana, labels.real))
+# partition agreement
+matchClasses(tab_diana)
+compareMatchedClasses(labels.diana, labels.real)$diag
+# We force each cluster to be assigned to a different class
+matchClasses(tab_diana, method="exact")
+compareMatchedClasses(labels.diana, labels.real, method="exact")$diag
+@
+
+
+<<clustering_agnes, warning=FALSE, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Dendrogram for AGNES clustering">>=
+# agnes
+agnes_clustering <- agnes(scale(data.selected.features))
+# dendrogaram
+plot(agnes_clustering, hang=-1, which.plot=2)
+## Cut into 2 groups:
+labels.agnes <- cutree(as.hclust(agnes_clustering), k = 5)
+labels.real <- data$class
+
+(tab_agnes <- table(labels.agnes, labels.real))
+# partition agreement
+matchClasses(tab_agnes)
+compareMatchedClasses(labels.agnes, labels.real)$diag
+
+# We force each cluster to be assigned to a different class
+matchClasses(tab_agnes, method="exact")
+compareMatchedClasses(labels.agnes, labels.real, method="exact")$diag
+@
+
+
+<<clustering_kmeans_pca, include=FALSE, cache=TRUE>>=
+# Cluster labels vs. actual class labels
+
+# kmeans
+kmeans_clustering_pca <- kmeans(data.features.pca.all, centers=5)
+labels.kmeans_pca <- kmeans_clustering_pca$cluster
+labels.real <- data$class
+
+(tab_kmeans_pca <- table(labels.kmeans_pca, labels.real))
+
+# partition agreement
+matchClasses(tab_kmeans_pca)
+compareMatchedClasses(labels.kmeans_pca, labels.real)$diag
+
+# We force each cluster to be assigned to a different class
+matchClasses(tab_kmeans_pca, method="exact")
+compareMatchedClasses(labels.kmeans_pca, labels.real, method="exact")$diag
+@
+
+<<clustering_pam_pca, include=FALSE, cache=TRUE>>=
+# pam 
+pam_clustering_pca <- pam(data.features.pca.all, k=5)
+labels.pam_pca <- pam_clustering_pca$cluster
+labels.real <- data$class
+
+(tab_pam_pca <- table(labels.pam_pca, labels.real))
+
+# partition agreement
+matchClasses(tab_pam_pca)
+compareMatchedClasses(labels.pam_pca, labels.real)$diag
+
+# We force each cluster to be assigned to a different class
+matchClasses(tab_pam_pca, method="exact")
+compareMatchedClasses(labels.pam_pca, labels.real, method="exact")$diag
+
+@
+
+
+<<clustering_diana_pca, warning=FALSE, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Dendrogram for DIANA clustering with PCA">>=
+# diana
+diana_clustering_pca <- diana(data.features.pca.all)
+# dendrogaram
+plot(diana_clustering_pca, hang=-1, which.plot=2)
+## Cut into 2 groups:
+labels.diana_pca <- cutree(as.hclust(diana_clustering_pca), k = 5)
+labels.real <- data$class
+
+(tab_diana_pca <- table(labels.diana_pca, labels.real))
+# partition agreement
+matchClasses(tab_diana_pca)
+compareMatchedClasses(labels.diana_pca, labels.real)$diag
+# We force each cluster to be assigned to a different class
+matchClasses(tab_diana_pca, method="exact")
+compareMatchedClasses(labels.diana_pca, labels.real, method="exact")$diag
+@
+
+<<clustering_agnes_pca, warning=FALSE, echo=FALSE, results='hide', cache=FALSE, fig.align="center", fig.cap="Dendrogram for AGNES clustering with PCA">>=
+# agnes
+agnes_clustering_pca <- agnes(data.features.pca.all)
+# dendrogaram
+plot(agnes_clustering_pca, hang=-1, which.plot=2)
+## Cut into 2 groups:
+labels.agnes_pca <- cutree(as.hclust(agnes_clustering_pca), k = 5)
+labels.real <- data$class
+
+(tab_agnes_pca <- table(labels.agnes_pca, labels.real))
+# partition agreement
+matchClasses(tab_agnes_pca)
+compareMatchedClasses(labels.agnes_pca, labels.real)$diag
+
+# We force each cluster to be assigned to a different class
+matchClasses(tab_agnes_pca, method="exact")
+compareMatchedClasses(labels.agnes_pca, labels.real, method="exact")$diag
+@
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c| } 
+\hline
+method & unsupervised feature selection & dimensionality reduction\\
+\hline
+K Means & 69.05\% & 64.29\% \\
+PAM & 73.81\%  & 66.67\% \\
+DIANA & 50\% & 52.38\% \\
+AGNES & 35.71\% & 30.95\% \\
+\hline
+\end{tabular}
+\caption{Percentage of matches cases}
+\label{tab:matched_classes_tab}
+\end{table}
+
+
+\chapter{Conclusions}
+
+Based on our research findings, we conclude that there is not a universal trend regarding the performance of our chosen classification algorithms with feature selection or dimensionality reduction. Analysis of test errors reveals that the PCA approach outperformed feature selection for kNN and Multinomial Logistic Regression, while Decision Tree exhibited its best performance with feature selection. Random Forest got identical results in terms of both approaches, but tuned parameters were different. It emphasises the need for individual development for each of these algorithms since they might be sensitive to different features manipulations. 
+
+Addressing the class imbalance issue through macro-averaged F1 scores yielded generally satisfactory results. However, in the cases of Decision Tree with PCA or Multinomial Logistic Regression with randomly chosen features, these models failed to predict one of our classes. This is a significant drawback that can be investigated in further research.
+
+Overall, the most successful method was Multinomial Logistic Regression with the PCA approach. It demonstrated excellent accuracy and sensitivity to our class imbalance problem. Although K Nearest Neighbors algorithm with k=1 with PCA and Multinomial Logistic Regression with feature selection produced slightly higher errors, they still stand out as very capable models. As for LDA and QDA, their suitability depends on the number of features that we end up with. 
+
+When evaluating clustering techniques, we contrasted the unsupervised feature selection approach using the PAM algorithm with dimensionality reduction. Our analysis revealed that the choice of approach significantly influences the results, as evidenced by the comparison of internal validation indices. Furthermore, we examined how well the clustering results aligned with the actual classes. Interestingly, we found that the clusters do not always accurately reflect the actual classes. However, this was not the case for the PAM algorithm, which demonstrated a notable alignment between the clusters and the actual classes.
+
+\chapter{Further research suggestions}
+
+Indeed, our exploration of this multiclass classification problem has revealed numerous approaches, each with its own set of advantages and drawbacks. For the next phase of this project, it would be beneficial to explore additional algorithms such as XGBoost, neural networks, or alternative clustering algorithms that were not utilized in our current analysis. Additionally, conducting research focused on specific tumor types could shed light on whether certain types are notably more challenging to classify.
+
+In summary, our project offers a meticulously crafted, data-driven perspective on this complex medical issue. By considering various methodologies and rigorously evaluating their performance, we aim to contribute valuable insights to the field.
+
+
+
+
+\end{document}

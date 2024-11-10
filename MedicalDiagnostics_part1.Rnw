@@ -1,0 +1,1412 @@
+\documentclass[12pt]{mwrep}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[hidelinks]{hyperref}
+\usepackage{bbm}
+\usepackage[T1]{fontenc}
+\author{Joanna Matuszak 255762, Joanna Wojciechowicz 255747}
+\title{Microarray brain tumor diagnostics}
+\date{\today}
+
+<<include=FALSE, warning=FALSE, message=FALSE>>=
+pdf.options(encoding='CP1250')
+@
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\chapter{Introduction}
+
+In this project, we introduce exploratory data analysis and multiclass classification on microarray data regarding brain tumors. Microarray data experiments monitor gene expression in different tissues. The experiment is equipped with an additional response variable such as a cancer type. In this dataset, we have 5 different tumor types in the response variable - class. Furthermore, the number of measured genes is more than 5 thousand. It is assumed that only a few marker components of this gene subset determine the type of tissue. The identification of these significant groups is crucial for tumor classification in medical diagnostics, as well as for understanding how the genome as a whole works. 
+
+Accordingly, before exploratory data analysis, we performed feature selection to focus only on the most meaningful features for the whole dataset. The feature selection procedure and its stability will be described in the following part of the project. In the analysis, we took into account various aspects of the data like distribution in classes, different statistics, discriminative ability of each feature, correlation between chosen genes, data visualization, etc. Based on the knowledge that we gained in this part, we could move to the classification problem.
+
+In the classification part, we took into account various classification algorithms: K Nearest Neighbors, Linear and Quadratic Discriminant Analysis, Multinomial Logistic Regression, Decision Tree and Random Forest. Since we faced a problem of a large number of features and a very small number of observations ($p \gg n$), we incorporated a feature selection procedure into our model selection pipeline. We performed leave-one-out cross-validation on the algorithms to extract the best parameters for our models. Finally, we compared our models with chosen parameters based on misclassification errors and macro-averaged F1 score. We also investigated their stability using box plots. At the end, we suggested further research directions that might improve our work.
+
+The main research problem is the evaluation of the chosen feature selection method based on the comparison of models' results with feature selection and with randomly chosen features. Another important problem is the selection of the best model for our research, investigating the stability of the feature selection procedure, and the stability of chosen models. This study might yield a better diagnostic method, where doctors might get suggestions on tumor type from the model.
+
+\chapter{Feature preselection}
+\label{ch:feature_preselection}
+In the brain tumor data set we face a problem of large number of genes. The sample size $n$ is much smaller than the dimensionality of the feature space - the number of genes $p$. We are looking for the most important features, with strong discriminant ability. It drastically reduces computational time and might improve the results - due to reduced amount of noise. 
+
+In feature selection procedure${}^{[1]}$ we score each gene $g \in \{1,\ldots,p\}$, according to its strength for phenotype discrimination. We base our approach on Wilcoxon’s two sample test,
+$$s\left(g\right) = \sum_{i \in N_{0}} \sum_{j \in N_{1}} 1_{[x_{j}^{\left(g\right)} - x_i ^ {\left(g\right)} \leq 0]},$$
+where $x_{i}^{\left(g\right)}$ is the expression value of gene $g$ for individual $i$ and $N_m$ represents the set of the $n_m$ indices, where $n_m \in \{1,\ldots,n\}$, having response in $m \in \{0,1\}$. It is easy to notice that both values near the minimum score zero and the maximum score $n_0 n_1$ indicate strongly informative gene. It is because we can interpret the score function as counting for each individual having response value zero, the number of instances with response one that have smaller expression values. We introduce quality measure
+$$q\left(g\right) = max\left(s\left(g\right), n_0n_1 - s\left(g\right)\right),$$
+which gives the highest values to those genes that express the strongest discriminative ability in terms of phenotype discrimination. 
+
+This procedure is implemented in the code below.
+
+<<feature_preselection_algorithm>>=
+# Wilcoxon's test
+score <- function(x, y, flag)
+{
+  if (flag == 'statistic') {
+    wilcox.test(x[which(y==0)], x[which(y==1)])$statistic
+  }
+  else if (flag == 'p.value') {
+    wilcox.test(x[which(y==0)], x[which(y==1)])$p.value
+  }
+}
+
+# Best features based on given learning set
+feature.preselection <- function(xlearn, ylearn, presel = 40)
+{
+  s  <-  apply(xlearn, 2, score, ylearn, 'statistic')
+  a <- (sum(ylearn==0)*sum(ylearn==1)) - s
+  quality <- apply(rbind(s,a),2,max)
+  genes   <- rev(order(quality))[1:presel]
+  qualities <- quality[genes]
+  best.features <- list("genes"=genes, "qualities"=qualities)
+  return(best.features)
+}
+@
+
+
+\chapter{Exploratory data analysis on chosen features}
+In our brain tumor microarray data set, we have:
+
+- 5598 features (including label),
+
+- 42 observations,
+
+- 5 classes in the target variable - $0,1,2,3,4$.
+
+All 5597 variables are quantitative continuous features, and the target variable - class - is discrete nominal. We do not have any missing values or duplicated observations in our data.
+
+
+
+<<libraries, include=FALSE, warning=FALSE, message=FALSE>>=
+library(stats)
+library(ggplot2)
+library(tidyverse)
+library(patchwork)
+library(scales)
+library(tidyr)
+library(reshape2)
+library(xtable)
+library(MASS)
+library(caret)
+library(nnet)
+library(rpart)
+library(randomForest)
+set.seed(42)
+@
+
+<<load, include=FALSE>>=
+# loading the data
+load(file="brain.rda")
+
+# combining the data into one data frame
+data <- as.data.frame(brain.x)
+data$class <- brain.y
+@
+
+<<n, include=FALSE>>=
+# number of observations, columns, classes
+nrow(data)
+ncol(data)
+unique(data$class)
+@
+
+<<imbalance, include=FALSE>>=
+# class imbalance problem
+table(data$class)
+@
+
+<<imbalance_plot,echo=FALSE, fig.align="center", fig.cap="Distribution of each class in the dataset">>=
+ggplot(data, aes(x=class))+
+  geom_bar(stat="count", fill="steelblue", alpha=0.8)+
+  ggtitle('Distribution of classes') +
+  theme(plot.title=element_text(hjust=0.5, size=18)) +
+  scale_y_continuous(breaks=pretty_breaks())
+@
+
+<<types, include=FALSE>>=
+# correct data types? - all numeric - quantitative continuous
+all_numeric <- all(sapply(data, is.numeric))
+all_numeric
+@
+
+<<missing, include=FALSE>>=
+# missing values? - no
+sum(is.na(data))
+@
+
+<<duplicates, include=FALSE>>=
+# duplicates? - no
+sum(duplicated(data))
+@
+
+<<presel_func, include=FALSE>>=
+
+# Wilcoxon's test
+score <- function(x, y, flag)
+{
+  if (flag == 'statistic') {
+    wilcox.test(x[which(y==0)], x[which(y==1)])$statistic
+  }
+  else if (flag == 'p.value') {
+    wilcox.test(x[which(y==0)], x[which(y==1)])$p.value
+  }
+}
+
+feature.preselection <- function(xlearn, ylearn, presel = 10)
+{
+  s  <-  apply(xlearn, 2, score, ylearn, 'statistic')
+  a <- (sum(ylearn==0)*sum(ylearn==1)) - s
+  quality <- apply(rbind(s,a),2,max)
+  genes   <- rev(order(quality))[1:presel] # order returns order by index
+  qualities <- quality[genes]
+  mylist <- list("genes"=genes, "qualities"=qualities)
+  return(mylist)
+}
+
+feature.preselection.pvalues <- function(xlearn, ylearn, presel = 10)
+{
+  s  <-  apply(xlearn, 2, score, ylearn, 'p.value')
+  genes   <- rev(order(s))[1:presel]
+  pvalues <- s[genes]
+  mylist <- list("genes"=genes, "pvalues"=pvalues)
+  return(mylist)
+}
+@
+
+<<presel, echo=FALSE>>=
+## Application to brain tumor dataset (5 classes)
+xlearn <- brain.x
+ylearn <- brain.y
+feat.presel.list <- list()
+n.presel.feat <- 10  # number of preselected features
+@
+
+<<presel_graphs, include=FALSE>>=
+graph_and_selected_features <- function(k, xlearn, ylearn, n.presel.feat)
+{
+  print(paste('class ',k,' vs rest'))
+  ylearn.tumor.type.k <- ifelse(ylearn==k,1,0) # one-vs-rest encoding
+  results <- feature.preselection(xlearn, ylearn.tumor.type.k, presel=n.presel.feat)
+  feat.sel.type.k <- results$genes
+  print(paste(c('selected features: ', feat.sel.type.k), collapse=" "))
+  
+  columns <- colnames(data[,-5598])[feat.sel.type.k]
+  quality <- results$qualities
+  df <- data.frame(cbind(columns, quality))
+  df$quality <- as.numeric(df$quality)
+  #df<- df %>% arrange(desc(df$quality))
+  
+  # quality value graph for genes
+  df$columns <- factor(df$columns, levels = df$columns[rev(order(df$quality))])
+  mylist <- list("feat.sel.type.k"=feat.sel.type.k, "df"=df)
+  return(mylist)
+}
+
+graph_and_selected_features_pvalues <- function(k, xlearn, ylearn, n.presel.feat)
+{
+  print(paste('class ',k,' vs rest'))
+  ylearn.tumor.type.k <- ifelse(ylearn==k,1,0) # one-vs-rest encoding
+  results <- feature.preselection.pvalues(xlearn, ylearn.tumor.type.k, presel=n.presel.feat)
+  feat.sel.type.k <- results$genes
+  print(paste(c('selected features: ', feat.sel.type.k), collapse=" "))
+  
+  columns <- colnames(data[,-5598])[feat.sel.type.k]
+  pvalue <- results$pvalues
+  df <- data.frame(cbind(columns, pvalue))
+  df$pvalue <- as.numeric(df$pvalue)
+  #df<- df %>% arrange(desc(df$quality))
+  
+  df$columns <- factor(df$columns, levels = df$columns[order(df$pvalue)])
+  mylist <- list("feat.sel.type.k"=feat.sel.type.k, "df"=df)
+  return(mylist)
+}
+@
+
+<<quality_subplots, include=FALSE, cache=TRUE>>=
+
+k <- 0
+df_0_quality <- graph_and_selected_features(k, xlearn, ylearn, 10)$df
+mytitle <- expression(paste0("Class ", k))
+
+g0 <- ggplot(data=df_0_quality, aes(x=columns, y=quality)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  coord_cartesian(ylim = c(250, 320)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 1
+df_1_quality <- graph_and_selected_features(k, xlearn, ylearn, 10)$df
+mytitle <- expression(paste0("Class ", k))
+
+g1 <- ggplot(data=df_1_quality, aes(x=columns, y=quality)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  coord_cartesian(ylim = c(250, 320)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 2
+df_2_quality <- graph_and_selected_features(k, xlearn, ylearn, 10)$df
+mytitle <- expression(paste0("Class ", k))
+
+g2 <- ggplot(data=df_2_quality, aes(x=columns, y=quality)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  coord_cartesian(ylim = c(250, 320)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 3
+df_3_quality <- graph_and_selected_features(k, xlearn, ylearn, 10)$df
+mytitle <- expression(paste0("Class ", k))
+
+g3 <- ggplot(data=df_3_quality, aes(x=columns, y=quality)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  coord_cartesian(ylim = c(100, 200)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 4
+df_4_quality <- graph_and_selected_features(k, xlearn, ylearn, 10)$df
+mytitle <- expression(paste0("Class ", k))
+
+g4 <- ggplot(data=df_4_quality, aes(x=columns, y=quality)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  coord_cartesian(ylim = c(200, 275)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+@
+
+<<quality_subplots_plot, echo=FALSE, cache=TRUE, fig.align="center", fig.cap="Highest quality score features for each class">>=
+g0 + g1 + g2 + g3 + g4 + plot_layout(ncol = 2) + 
+  plot_annotation(title="Highest quality features for each class", 
+                  theme = theme(plot.title=element_text(hjust=0.5, size=18)))
+@
+
+
+<<pvalue_subplots, include=FALSE, cache=TRUE>>=
+# Subplots for p value for best features for all 5 classes 
+k <- 0
+df <- graph_and_selected_features_pvalues(k, xlearn, ylearn, 5598)$df
+mytitle <- expression(paste0("Class ", k))
+df <- df[is.element(df$columns, df_0_quality$columns),]
+g0 <- ggplot(data=df, aes(x=columns, y=pvalue)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 1
+df <- graph_and_selected_features_pvalues(k, xlearn, ylearn, 5598)$df
+mytitle <- expression(paste0("Class ", k))
+df <- df[is.element(df$columns, df_1_quality$columns),]
+g1 <- ggplot(data=df, aes(x=columns, y=pvalue)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 2
+df <- graph_and_selected_features_pvalues(k, xlearn, ylearn, 5598)$df
+mytitle <- expression(paste0("Class ", k))
+df <- df[is.element(df$columns, df_2_quality$columns),]
+g2 <- ggplot(data=df, aes(x=columns, y=pvalue)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 3
+df <- graph_and_selected_features_pvalues(k, xlearn, ylearn, 5598)$df
+mytitle <- expression(paste0("Class ", k))
+df <- df[is.element(df$columns, df_3_quality$columns),]
+g3 <- ggplot(data=df, aes(x=columns, y=pvalue)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+k <- 4
+df <- graph_and_selected_features_pvalues(k, xlearn, ylearn, 5598)$df
+mytitle <- expression(paste0("Class ", k))
+df <- df[is.element(df$columns, df_4_quality$columns),]
+g4 <- ggplot(data=df, aes(x=columns, y=pvalue)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle(paste("Class", k)) +
+  theme(plot.title=element_text(hjust=0.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+@
+
+<<pvalue_subplots_plot, echo=FALSE, cache=TRUE, cache=TRUE, fig.align="center", fig.cap="P-values for highest quality score features for each class">>=
+g0 + g1 + g2 + g3 + g4 + plot_layout(ncol = 2) + 
+  plot_annotation(title="P-values for chosen features", 
+                  theme = theme(plot.title=element_text(hjust=0.5, size=18)))
+@
+
+
+<<eda, include=FALSE>>=
+# EDA of chosen columns 
+chosen_features <- c(4080, 4163,1892, 1033, 3815, 3338, 845, 1394, 2848, 2445, 2429, 540, 4274, 4318, 4356, 4589, 1367, 5546, 808, 5316, 5598)
+
+unique(chosen_features) # we have 20 different columns
+
+data_eda <- data[, chosen_features] # our data to EDA
+all(sapply(data_eda, is.numeric)) # all numeric - continuous data
+
+summary.matrix <- t(sapply(data_eda[,-21], summary))
+@
+
+<<modal_interval, echo=FALSE, results='asis'>>=
+# add modal interval 
+modal_interval <- function(feature_values) {
+  # Calculate the histogram for the continuous feature
+  hist_data <- hist(feature_values, breaks = "Sturges", plot = FALSE)
+  
+  # Find the bin (interval) with the highest frequency (mode)
+  modal_interval1 <- hist_data$mids[which.max(hist_data$counts)]
+  modal_interval2 <- modal_interval1+diff(hist_data$breaks)[1]
+  
+  mylist <- list("modal_interval_low"=modal_interval1, "modal_interval_high"=modal_interval2)
+  return(mylist)
+}
+
+modal_intervals <- sapply(data_eda[,-21], modal_interval)
+modal_intervals_df <- data.frame(t(modal_intervals))
+mi <- paste("(", paste(modal_intervals_df$modal_interval_low, modal_intervals_df$modal_interval_high, sep=" ,"), ")")
+summary.matrix <- round(summary.matrix,2)
+summary.matrix <- cbind(as.matrix(summary.matrix), as.matrix(mi))
+colnames(summary.matrix)[7] <- "Modal interval"
+
+library(xtable)
+xtable(summary.matrix, caption = "Summary matrix of selected features", label = "tab:eda")
+
+@
+
+<<boxplots1, echo=FALSE, cache=TRUE, fig.align="center", fig.cap="Boxplots of all features">>=
+# charts - continuous quantitative data
+
+# boxplot - to see that we will need standardization, normalization in train set!!!
+gathered_data <- data_eda[,-21] %>%
+  gather(key = "variable", value = "value")
+
+# Create a boxplot of all features on one graph
+plot1 <- ggplot(gathered_data, aes(x = variable, y = value)) +
+  geom_boxplot(fill="steelblue", alpha=0.8) +
+  ggtitle("Boxplots of all features") +
+  theme(plot.title=element_text(hjust=0.5, size=18), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+plot1
+
+@
+
+
+<<histogram1, echo=FALSE, cache=TRUE,  fig.align="center", fig.cap="Histograms of all features">>=
+# Create a histogram of all features on one graph
+plot2 <- ggplot(gathered_data, aes(x = value, fill=variable)) +
+  geom_histogram(aes(y=..density..), bins=20, position = "dodge", alpha=0.8) +
+  geom_density(aes(color = variable), alpha = 0) + 
+  facet_wrap(~ variable, scales = "free") +
+  ggtitle("Histograms of all features") +
+  theme(plot.title=element_text(hjust=0.5, size=18))
+plot2
+
+
+@
+
+<<normal, include=FALSE>>=
+# test for distributions
+# NORMAL - V4589, V4356
+pvaluev4356 <- ks.test(data$V4356, "pnorm")$p.value # not 
+pvaluev4589 <- ks.test(data$V4589, "pnorm")$p.value # not
+@
+
+<<uniform, include=FALSE>>=
+# UNIFORM - V4163, V2429, V4080
+pvaluev4163 <- ks.test(data$V4163, "punif", min(data$V4163), max(data$V4163))$p.value # YES
+pvaluev2429 <- ks.test(data$V4163, "punif", min(data$V2429), max(data$V2429))$p.value # NO
+pvaluev4080 <- ks.test(data$V4080, "punif", min(data$V4080), max(data$V4080))$p.value # YES
+pvaluev808 <- ks.test(data$V808, "punif", min(data$V808), max(data$V808))$p.value # NO
+# zrobić tabele w markdownie z pvalues
+@
+
+On the graph depicting class imbalance (\ref{fig:imbalance_plot}), we can see that we have an imbalanced classes problem in our dataset. Class 3 and class 4 have significantly fewer observations than the rest of the classes.
+
+We face a problem of a large number of features versus a small number of observations ($p \gg n$).  In exploratory data analysis, we will use the already described feature selection approach to extract the most important features for the entire dataset. Since feature selection works in a one-vs-all manner, we will first choose the 10 most important features for each class. Regarding the quality statistic values shown on the graph (\ref{fig:quality_subplots_plot}), different features have varying quality values for each class. Moreover, each class does not choose exactly the same genes as the most important ones. The same behavior is evident on the graph (\ref{fig:pvalue_subplots_plot}), where the same genes are presented for each class in terms of p-values. All p-values presented on the graphs are less than 0.05, allowing us to reject the null hypothesis that these features are not significant for specific classes.
+
+Next, we will select the four most important features for each class and conduct the analysis on them. On the summary matrix below (\ref{tab:eda}), we can see that most of the features contain negative values, while only features $V4080$ and $V1033$ do not. The ranges of feature values are similar - there is no gene with significantly bigger range. From the last column of the summary, we can see that features contain most observations in different value ranges. 
+
+In the boxplots of each feature (\ref{fig:boxplots1}), features $V2848$, $V3338$, $V4318$, $V4356$, and $V4589$ have outliers. We do not treat them as incorrect values, considering we only have 42 observations and 5 different types of tumors. Outliers might help us distinguish specific types of tumors. The boxplots of features are spread across different parts of the Y-axis - indicating a potential need for data standardization. 
+
+Reviewing the histograms of each feature (\ref{fig:histogram1}), we can observe the distribution of each gene. Histograms of $V1033$, $V2429$, $V2445$, $V2848$, $V3815$, $V4163$, $V4318$, $V4356$, and $V4589$ features are unimodal, while histograms of $V1367$, $V1394$, $V1892$, $V4080$, $V4274$, $V5316$, $V540$, $V5546$, $V808$, $V845$, and $V3338$ features are multimodal. We suspect that the distributions of features $V4589$ and $V4356$ might be normal. Using the Kolmogorov-Smirnov test, we obtain a p-value less than $0.05$ in both cases (table \ref{tab:pvalues_norm}), indicating rejection of the null hypothesis about normal distribution. For features $V4163$, $V2429$, $V4080$, and $V808$, we will check if the distribution is uniform using the Kolmogorov-Smirnov test. For features $V2429$ and $V808$, the p-value is less than $0.05$ (table \ref{tab:pvalues_uni}), rejecting the null hypothesis about uniform distribution. However, for features $V4163$ and $V4080$, the p-value is greater than $0.05$, so we cannot reject the hypothesis about uniform distribution of data.
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c| } 
+\hline
+Column & p-value \\
+\hline
+V4589 & \Sexpr{pvaluev4589} \\ 
+V4356 & \Sexpr{pvaluev4356} \\ 
+\hline
+\end{tabular}
+\caption{P-values for selected features for testing normal distribution.}
+\label{tab:pvalues_norm}
+\end{table}
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c| } 
+\hline
+Column & p-value \\
+\hline
+V2429 & \Sexpr{pvaluev2429} \\ 
+V808 & \Sexpr{pvaluev808}\\ 
+V4163 & \Sexpr{pvaluev4163} \\ 
+V4080 & \Sexpr{pvaluev4080} \\ 
+\hline
+\end{tabular}
+\caption{P-values for selected features for testing uniform distribution.}
+\label{tab:pvalues_uni}
+\end{table}
+
+<<boxplots_feat_class, echo=FALSE, cache=TRUE, fig.align="center", fig.cap="Boxplots of each feature grouped by class">>=
+gathered_data <- data_eda %>%
+  gather(key = "Feature", value = "Value", -class)
+
+# Create boxplots for each feature grouped by class
+ggplot(gathered_data, aes(x = class , y = Value, fill = factor(class))) +
+  geom_boxplot(alpha=0.8) +
+  labs(title = "Boxplots of each feature by class") +
+  facet_wrap(~ Feature, scales = "free_y") + 
+  theme(plot.title=element_text(hjust=0.5, size=18))
+@
+
+<<histogram_boxplot, include=FALSE>>=
+# histograms - no new new information, won't be included
+gathered_data <- data_eda %>%
+  gather(key = "Feature", value = "Value", -class)
+
+# Create boxplots for each feature grouped by class
+ggplot(gathered_data, aes(x=Value, fill = factor(class))) +
+  geom_histogram(bins=20, alpha = 0.5) +
+  labs(title = "Boxplots of Each Feature by Class") +
+  facet_wrap(~ Feature, scales = "free_y") + 
+  theme(plot.title=element_text(hjust=0.5, size=18))
+@
+
+<<scatter_plot_matrix, include=FALSE>>=
+# scatterplot matrix
+pairs(data_eda[,-21]) # not ggplot ??
+@
+
+<<correlation_matrix, include=FALSE>>=
+# correlation for each pair of features - scatter plot for correlated
+correlation_matrix <- cor(data_eda[,-21])
+@
+
+
+<<corr_matrix, echo=FALSE, cache=TRUE, fig.align="center", fig.cap="Correlation of selected features">>=
+# Reshape correlation matrix for plotting
+melted_corr <- melt(correlation_matrix)
+
+# Plotting the heatmap using ggplot
+ggplot(melted_corr, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "blue") +
+  labs(title = "Correlation Heatmap", x = "", y = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title=element_text(hjust=0.5, size=18)) +
+  coord_fixed()
+@
+
+<<scatterplots_corr, echo=FALSE, cache=TRUE, fig.align="center", fig.cap="Scatterplots for correlated features">>=
+# scatterplots for correlated columns
+plot5 <- ggplot(data_eda[,-21], aes(x=V540, y=V2848)) + 
+  geom_point(color="steelblue")
+
+plot6 <- ggplot(data_eda[,-21], aes(x=V540, y=V2445)) + 
+  geom_point(color="steelblue")
+
+plot7 <- ggplot(data_eda[,-21], aes(x=V2429, y=V2848)) + 
+  geom_point(color="steelblue")
+
+plot8 <- ggplot(data_eda[,-21], aes(x=V2429, y=V2445)) + 
+  geom_point(color="steelblue")
+
+plot9 <- ggplot(data_eda[,-21], aes(x=V1367, y=V3338)) + 
+  geom_point(color="steelblue")
+
+plot10 <- ggplot(data_eda[,-21], aes(x=V1033, y=V4080)) + 
+  geom_point(color="steelblue")
+
+plot11 <- ggplot(data_eda[,-21], aes(x=V1033, y=V4163)) + 
+  geom_point(color="steelblue")
+
+plot5 + plot6 + plot7 + plot8 + plot9 + plot10 + plot11 +
+  plot_layout(ncol = 3) + 
+  plot_annotation(title="Scatterplots for correlated features", 
+                  theme = theme(plot.title=element_text(hjust=0.5, size=18)))
+
+@
+
+
+
+
+Now, we aim to perform an analysis within classes to investigate the discriminative ability of our features and their importance. On the graphs depicting boxplots of each feature concerning class labels (\ref{fig:boxplots_feat_class}), several important conclusions can be drawn.
+
+1. Feature $V1033$ is discriminative for classes 0 and 4.
+
+2. Feature $V1394$ is discriminative for class 1, feature $V1892$ for class 0, feature $V2429$ for class 2 and feature $V2445$ for class 2. 
+
+3. Feature $V2848$ is discriminative for class 2 and 3, feature $V3338$ for class 1 and 4, feature $V3815$ for class 1.
+
+4. Feature $V4080$ is discriminative for class 0, $V4163$ for class 0, $V4274$ for class 3 and $V4318$ for class 3.
+
+5. Feature $V4356$ is discriminative for class 3, $V4589$ for class 3, $V5316$ for class 4 and $V540$ for class 2.
+
+6. Feature $V5546$ is discriminative for class 4, $V808$ for class 4 (to a lesser extent) and $V845$ for class 1.
+
+From the conclusions drawn from the mentioned boxplots, it is evident that each feature is discriminative for at least one class. This underscores the importance of the chosen genes by our feature selection method and its utility.
+
+We would also like to investigate the correlation between our features. On the correlation heatmap (\ref{fig:corr_matrix}), some features show strong correlations with each other. For the strongest correlations, we can examine the scatterplots (\ref{fig:scatterplots_corr}).
+
+1. For pairs of features $V3338$, $1367$ and $V4080$, $1033$ and $V1033$, $4163$, we observe positive correlation.
+
+2. for pairs of features $V2848$ and $540$, $2445$ and $540$, $2848$ and $2429$, $2445$ and $2429$, we observe negative correlation.
+
+\chapter{Classification}
+
+We will face problem of multiclass classification. We will investigate following models:
+\begin{itemize}
+\item K Nearest Neighbors,
+\item Linear and Quadratic Discriminant Analysis,
+\item Multinomial Logistic Regression,
+\item Decision Tree,
+\item Random Forest.
+\end{itemize}
+
+We split the data into learning (2/3) and test (1/3) sets once for the classification part. Taking into account the class imbalance problem we will use \verb|createDataPartition| function from the \verb|caret| package where stratify is included.
+
+We will perform leave-one-out cross-validation in order to find the best parameters of chosen models. In each step of cross-validation we will perform feature selection procedure on the training subset of the learning set. We will choose 40 best features with respect to each class - 200 features in total. Thereupon we will avoid information leakage from the validation subset. Therefore, will treat feature selection process as an integral part of the model pipeline. Similarly, the final models will perform feature selection only on the given learning set. Additionally, we incorporate data standardization also being careful about information leakage from the validation and test sets.
+
+We will also investigate the significance of choosing best features. We will check if randomly chosen features will impact the model performance.
+
+After choosing the best models we will compare their missclassification errors and stability. 
+
+
+<<load2, echo=FALSE, cache=TRUE>>=
+# loading the data
+load(file="brain.rda")
+
+# combining the data into one data frame
+data <- as.data.frame(brain.x)
+data$class <- brain.y
+
+# division into test and learning set
+inLearning <- createDataPartition(y=data$class, times=1, p=2/3, list=FALSE) # class imbalance problem taken care of defaultly - stratify
+learningSet <- data[inLearning,]
+testSet <- data[-inLearning,]
+@
+
+\section{K Nearest Neighbors}
+
+The first model we will consider is the K Nearest Neighbors algorithm. We will try to find the optimal value of the $k$ parameter. In order to do that will compare the average missclassification errors based on the leave-one-out cross-validation. We will investigate up to $10$ nearest neighbors.
+
+In the graph \ref{fig:kNN_k_plot} we can see that the more neighbors we consider the greater the error gets. It applies to both train and validation errors. We choose $k=1$ as the optimal value of the parameter because in such case we get the smallest value of the misclassification error on the validation set. It is worth noticing that for $k=1$ we get the smallest error on the train set but since we also have the smallest error on the validation set we will not consider this case as an overfitting.
+
+We will now consider similar procedure but without feature selection. We will train our model on 200 randomly chosen features. Based on the graph \ref{fig:kNN_k_plot_random} we can yield the same conclusion about the choice of parameter $k$, the optimal value is $k=1$. However, it seems that we get greater misclassifcation error in comparison to the model with feature selection.
+
+
+<<kNN_k_selection_fun, echo=FALSE>>=
+errors_ks_knn <- function(ks, learning_set, selected_features=NULL, presel=40) {
+  size <- nrow(learning_set) 
+  ks_train_errors <- matrix(nrow=size, ncol=length(ks))
+  ks_validation_errors <- matrix(nrow=size, ncol=length(ks))
+  for (i in 1:size) {
+    validation_set <- learning_set[i,]
+    train_set <- learning_set[-i,]
+    # data standarization
+    dataTransform <- preProcess(train_set[,-5598], method=c("center", "scale"))
+    train_set[,-5598] <- predict(dataTransform, train_set[,-5598])
+    validation_set[,-5598]  <- predict(dataTransform, validation_set[,-5598])
+    
+    if (is.null(selected_features)) {
+    selected_features <- c()
+    for (j in 0:4) {
+      ylearn.tumor.type.k <- ifelse(train_set[,5598]==j,1,0) # one-vs-rest encoding
+      selected_features_k <- feature.preselection(train_set[,-5598], ylearn.tumor.type.k, presel=40)$genes
+      selected_features <- c(selected_features, selected_features_k)
+    }
+    selected_features <- unique(selected_features)
+    }
+  
+    for (k in 1:10){
+      # train the model
+      model <- knnreg(train_set[,selected_features], train_set[,5598],k=k)
+      # predictions
+      train_prediction <- predict(model, train_set[,selected_features])
+      validation_prediction <- predict(model, validation_set[,selected_features])
+      # classification error
+      train_error <- mean(train_prediction != train_set[,5598])
+      validation_error <- mean(validation_prediction != validation_set[,5598])
+      
+      ks_train_errors[i, k] <- train_error
+      ks_validation_errors[i, k] <- validation_error
+    }
+  }
+  errors <- list("train_errors"=ks_train_errors, "validation_errors"=ks_validation_errors)
+  return(errors)
+}
+@
+
+<<kNN_k_selection, cache=TRUE, echo=FALSE>>=
+mean_train_errors <- c()
+mean_validation_errors <- c()
+ks <- 1:10
+
+errors <- errors_ks_knn(ks, learningSet, selected_features=NULL, presel=40)
+mean_train_errors <- apply(errors$train_errors, 2, mean)
+mean_validation_errors <- apply(errors$validation_errors, 2, mean)
+
+mean_errors_ks_knn <- data.frame(t(rbind(ks, mean_train_errors, mean_validation_errors)))
+colnames(mean_errors_ks_knn) <- c("k", "train", "validation")
+@
+
+<<kNN_k_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for kNN model">>=
+# train and validation errors for different values of k - random subset of features
+errors_knn_plot <- ggplot(data = mean_errors_ks_knn, aes(x = k)) +
+  geom_line(aes(y = train, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Misclassification error for the k-NN model", x = "k", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = seq(min(mean_errors_ks_knn$k), max(mean_errors_ks_knn$k), by = 1)) +
+  theme(plot.title=element_text(hjust=0.5, size=18))
+
+errors_knn_plot # best for k=1
+@
+
+<<kNN_final, include=FALSE>>=
+# final model with chosen k and features chosen from the whole learning set - learning error and test error
+final_knn_model_errors <- function(learning_set, test_set, k, given_features= NULL, presel=40) {
+  # data standarization
+  dataTransform <- preProcess(learning_set[,-5598], method=c("center", "scale"))
+  test_set[,-5598] <- predict(dataTransform, test_set[,-5598])
+  learning_set[,-5598]  <- predict(dataTransform, learning_set[,-5598])
+  
+  # selecting best features, if not specified
+  if (is.null(given_features)) {
+    selected_features <- c()
+    for (j in 0:4) {
+      ylearn.tumor.type.k <- ifelse(learning_set[,5598]==j,1,0) # one-vs-rest encoding
+      selected_features_k <- feature.preselection(learning_set[,-5598], ylearn.tumor.type.k, presel)$genes
+      selected_features <- c(selected_features, selected_features_k)
+    }
+    selected_features <- unique(selected_features)
+  } else {
+    selected_features <- given_features
+  }
+  
+  # train the model
+  model <- knnreg(learning_set[,selected_features], learning_set[,5598],k=k)
+  # predictions
+  learning_prediction <- predict(model, learning_set[,selected_features])
+  test_prediction <- predict(model, test_set[,selected_features])
+  # classification error
+  learning_error <- mean(learning_prediction != learning_set[,5598])
+  test_error <- mean(test_prediction != test_set[,5598])
+  # confusion matrix
+  learning_confusion_matrix <- table(learning_prediction, learning_set[,5598])
+  test_confusion_matrix <- table(test_prediction, test_set[,5598])
+  
+  results <- list("learning_error"=learning_error, "test_error"=test_error, 
+                  "learning_conf"=learning_confusion_matrix, "test_conf"=test_confusion_matrix)
+  return(results)
+}
+@
+
+<<knn_final2, cache=TRUE, include=FALSE>>=
+# final model with selected features from the whole learning set
+knn_model_errors <- final_knn_model_errors(learningSet, testSet, 1)
+knn_model_errors
+@
+
+
+<<kNN_k_selection_random, cache=TRUE, echo=FALSE>>=
+# train and validation errors for different values of k
+mean_train_errors_random <- c()
+mean_validation_errors_random <- c()
+ks <- 1:10
+random_selected_features <-sample(1:5597, 200, replace=FALSE)
+errors_random <- errors_ks_knn(ks, learningSet, selected_features=random_selected_features, presel=40)
+mean_train_errors_random <- apply(errors_random$train_errors, 2, mean)
+mean_validation_errors_random <- apply(errors_random$validation_errors, 2, mean)
+
+mean_errors_ks_knn_random <- data.frame(t(rbind(ks, mean_train_errors_random, mean_validation_errors_random)))
+colnames(mean_errors_ks_knn_random) <- c("k", "train", "validation")
+@
+
+<<kNN_k_plot_random, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the k-NN model on the random subset of features">>=
+# train and validation errors for different values of k - random subset of features
+errors_knn_plot_random <- ggplot(data = mean_errors_ks_knn_random, aes(x = k)) +
+  geom_line(aes(y = train, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Misclassification error for the k-NN model \n for random subset of features", x = "k", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = seq(min(mean_errors_ks_knn_random$k), max(mean_errors_ks_knn_random$k), by = 1)) +
+  theme(plot.title=element_text(hjust=0.5, size=18))
+
+errors_knn_plot_random # best for k=1
+@
+
+<<knn_final2_random, cache=TRUE, include=FALSE>>=
+# final model with random selected features
+knn_model_errors_random <- final_knn_model_errors(learningSet, testSet, 1, random_selected_features)
+knn_model_errors_random
+@
+
+\section{Linear Discriminant Analysis and Quadratic Discriminant Analysis}
+
+Next, we will discuss two linear classification methods - LDA and QDA. Both of them have assumption about multivariate normality of the data. In the case of LDA we assume that covariance matrices for all classes are the same, and for QDA we estimate them for each class separately. However, our data does not have many observations, one class has only 4 records - it is not correct to make estimations of the covariance matrix on such small sample. Additionally, the number of predictor variables is much greater than the size of the smallest group in our data, therefore it may not be the best idea to use linear discriminant analysis in our case${}^{[2]}$. 
+
+\section{Multinomial Logistic Regression}
+
+Instead of LDA and QDA we will use another linear model - Multinomial Logistic Regression, which imposes fewer assumptions on data. In case of this model we will not search for optimal parameters. Contrary to other models, in this case we will pass less features to the model - 10 for each class, 50 in total due to model limitations.
+
+<<mlr_final_func, echo=FALSE>>=
+final_mlr_model_errors <- function(learning_set, test_set, selected_features= NULL, presel=40) {
+  # data standarization
+  dataTransform <- preProcess(learning_set[,-5598], method=c("center", "scale"))
+  test_set[,-5598] <- predict(dataTransform, test_set[,-5598])
+  learning_set[,-5598]  <- predict(dataTransform, learning_set[,-5598])
+  
+  # selecting best features, if not specified
+  if (is.null(selected_features)) {
+    selected_features <- c()
+    for (j in 0:4) {
+      ylearn.tumor.type.k <- ifelse(learning_set[,5598]==j,1,0) # one-vs-rest encoding
+      selected_features_k <- feature.preselection(learning_set[,-5598], ylearn.tumor.type.k, presel)$genes
+      selected_features <- c(selected_features, selected_features_k)
+    }
+    selected_features <- unique(selected_features)
+  }
+  
+  # train the model
+  ## Create a formula for a model with a large number of variables:
+  xnam <- paste0("V", selected_features)
+  (fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+  model <- multinom(fmla, data=learning_set)
+  # predictions
+  learning_prediction <- predict(model, learning_set[,selected_features])
+  test_prediction <- predict(model, test_set[,selected_features])
+  # classification error
+  learning_error <- mean(learning_prediction != learning_set[,5598])
+  test_error <- mean(test_prediction != test_set[,5598])
+  # confusion matrix
+  learning_confusion_matrix <- table(learning_prediction, learning_set[,5598])
+  test_confusion_matrix <- table(test_prediction, test_set[,5598])
+  
+  results <- list("learning_error"=learning_error, "test_error"=test_error, 
+                  "learning_conf"=learning_confusion_matrix, "test_conf"=test_confusion_matrix)
+  return(results)
+}
+@
+
+<<mlr_final, cache=TRUE, include=FALSE>>=
+# cannot pass too many columns (results in error)
+mlr_model_errors <- final_mlr_model_errors(learningSet, testSet, presel=10)
+mlr_model_errors
+@
+
+
+<<mlr_final_random, cache=TRUE, include=FALSE>>=
+# cannot pass too many columns (results in error)
+mlr_model_errors_random <- final_mlr_model_errors(learningSet, testSet, selected_features=sample(random_selected_features, 50))
+mlr_model_errors_random
+@
+
+\section{Decision Tree}
+
+We will now consider another type of classification algorithm - Decision Tree with minsplit = 1, minbucket = 1, which is reasonable for our data. One of possible parameters of the Decision Tree model is the complexity parameter $cp$, which is responsible for the size of the tree. It corresponds with tree pruning in terms of compromising between classification accuracy and model complexity.
+
+We will consider $cp$ values from $0.02$ to $0.2$. In the plot of misclassification errors (\ref{fig:dt_ct_plot}) we can see that on the validation set we get the smallest errors for $cp$ values lower than $0.08$. We observe that we do not have the case of overfitting because when we have the smallest values of train errors, we also have the smallest values of validation errors. For our final model we will choose the complexity parameter equal to $0.02$.
+
+In the plot (\ref{fig:dt_ct_plot_random}) for the case of random subset of features we can observe that the model performed the best for the lowest values of $cp$. However, the values of misclassification errors, especially for the validation set, are greater that the ones for the model with feature selection. 
+
+<<dt_cp_selection_func, echo=FALSE>>=
+errors_cps_dt <- function(cps, learning_set, selected_features=NULL, presel=40) {
+  learning_set$class <- as.factor(learning_set$class)
+  size <- nrow(learning_set) 
+  cps_train_errors <- matrix(nrow=size, ncol=length(cps))
+  cps_validation_errors <- matrix(nrow=size, ncol=length(cps))
+  for (i in 1:size) {
+    validation_set <- learning_set[i,]
+    train_set <- learning_set[-i,]
+    # data standarization
+    dataTransform <- preProcess(train_set[,-5598], method=c("center", "scale"))
+    train_set[,-5598] <- predict(dataTransform, train_set[,-5598])
+    validation_set[,-5598]  <- predict(dataTransform, validation_set[,-5598])
+    
+    if (is.null(selected_features)) {
+      selected_features <- c()
+      for (j in 0:4) {
+        ylearn.tumor.type.k <- ifelse(train_set[,5598]==j,1,0) # one-vs-rest encoding
+        selected_features_k <- feature.preselection(train_set[,-5598], ylearn.tumor.type.k, presel)$genes
+        selected_features <- c(selected_features, selected_features_k)
+      }
+      selected_features <- unique(selected_features)
+    }
+    
+    for (j in 1:length(cps)){
+      cp = cps[j]
+      xnam <- paste0("V", selected_features)
+      (fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+      selected_features_and_class <- c(selected_features, 5598)
+      model <- rpart(fmla, data=train_set[,selected_features_and_class], control = rpart.control(cp = cp, minsplit = 1, minbucket = 1))
+      # predictions
+      train_prediction <- predict(model, train_set[,selected_features_and_class], type = "class")
+      validation_prediction <- predict(model, validation_set[,selected_features_and_class], type = "class")
+      # classification error
+      train_error <- mean(train_prediction != train_set[,5598])
+      validation_error <- mean(validation_prediction != validation_set[,5598])
+      
+      cps_train_errors[i, j] <- train_error
+      cps_validation_errors[i, j] <- validation_error
+    }
+  }
+  errors <- list("train_errors"= cps_train_errors, "validation_errors"= cps_validation_errors)
+  return(errors)
+}
+@
+
+<<dt_ct_selection, cache=TRUE, include=FALSE, warning=FALSE>>=
+cps <- seq(0.02, 0.2, by=0.02)
+
+errors_dt <- errors_cps_dt(cps, learningSet, selected_features=NULL, presel=40)
+mean_train_errors_dt <- apply(errors_dt$train_errors, 2, mean)
+mean_validation_errors_dt <- apply(errors_dt$validation_errors, 2, mean)
+
+mean_errors_cps_dt <- data.frame(t(rbind(cps, mean_train_errors_dt, mean_validation_errors_dt)))
+colnames(mean_errors_cps_dt) <- c("cp", "train", "validation")
+@
+
+<<dt_ct_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the Decision Tree">>=
+# train and validation errors for different values of cp
+errors_cps_plot_dt <- ggplot(data = mean_errors_cps_dt, aes(x = cp)) +
+  geom_line(aes(y = train, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5, size=18)) +
+  labs(title = "Misclassification error for the Decision Tree model", x = "cp", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = seq(min(mean_errors_cps_dt$cp), max(mean_errors_cps_dt$cp), by = 0.02))
+
+errors_cps_plot_dt # best for k=1
+@
+
+<<dt_final_func, include=FALSE>>=
+# final model with chosen cp and features chosen from the whole learning set - learning error and test error
+final_dt_model_errors <- function(learning_set, test_set, cp, given_features= NULL, presel=40) {
+  learning_set$class <- as.factor(learning_set$class)
+  # data standarization
+  dataTransform <- preProcess(learning_set[,-5598], method=c("center", "scale"))
+  test_set[,-5598] <- predict(dataTransform, test_set[,-5598])
+  learning_set[,-5598]  <- predict(dataTransform, learning_set[,-5598])
+  
+  # selecting best features, if not specified
+  if (is.null(given_features)) {
+    selected_features <- c()
+    for (j in 0:4) {
+      ylearn.tumor.type.k <- ifelse(learning_set[,5598]==j,1,0) # one-vs-rest encoding
+      selected_features_k <- feature.preselection(learning_set[,-5598], ylearn.tumor.type.k, presel)$genes
+      selected_features <- c(selected_features, selected_features_k)
+    }
+    selected_features <- unique(selected_features)
+  } else {
+    selected_features <- given_features
+  }
+  
+  # train the model
+  xnam <- paste0("V", selected_features)
+  (fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+  selected_features_and_class <- c(selected_features, 5598)
+  model <- rpart(fmla, data=learning_set[,selected_features_and_class], control = rpart.control(cp = cp, minsplit = 1, minbucket = 1))
+  # predictions
+  learning_prediction <- predict(model, learning_set[,selected_features], type="class")
+  test_prediction <- predict(model, test_set[,selected_features], type="class")
+  # classification error
+  learning_error <- mean(learning_prediction != learning_set[,5598])
+  test_error <- mean(test_prediction != test_set[,5598])
+  # confusion matrix
+  learning_confusion_matrix <- table(learning_prediction, learning_set[,5598])
+  test_confusion_matrix <- table(test_prediction, test_set[,5598])
+  
+  results <- list("learning_error"=learning_error, "test_error"=test_error, 
+                  "learning_conf"=learning_confusion_matrix, "test_conf"=test_confusion_matrix)
+  return(results)
+}
+@
+
+<<dt_final, cache=TRUE, include=FALSE>>=
+dt_model_errors <- final_dt_model_errors(learningSet, testSet, cp=0.02, presel=40)
+dt_model_errors
+@
+
+<<dt_ct_selection_random, cache=TRUE, include=FALSE, warning=FALSE>>=
+errors_dt_random <- errors_cps_dt(cps, learningSet, selected_features=random_selected_features)
+mean_train_errors_dt_random <- apply(errors_dt_random$train_errors, 2, mean)
+mean_validation_errors_dt_random <- apply(errors_dt_random$validation_errors, 2, mean)
+
+mean_errors_cps_dt_random <- data.frame(t(rbind(cps, mean_train_errors_dt_random, mean_validation_errors_dt_random)))
+colnames(mean_errors_cps_dt_random) <- c("cp", "train", "validation")
+@
+
+<<dt_ct_plot_random, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the Decision Tree with random features">>=
+# train and validation errors for different values of cp
+errors_cps_plot_dt_random <- ggplot(data = mean_errors_cps_dt_random, aes(x = cp)) +
+  geom_line(aes(y = train, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5, size=18)) +
+  labs(title = "Misclassification error for the Decision Tree model \n with random features", x = "cp", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = seq(min(mean_errors_cps_dt$cp), max(mean_errors_cps_dt$cp), by = 0.02))
+
+errors_cps_plot_dt_random # best for k=1
+@
+
+<<dt_final_random, cache=TRUE, include=FALSE>>=
+dt_model_errors_random <- final_dt_model_errors(learningSet, testSet, cp=0.02, given_features = random_selected_features)
+dt_model_errors_random
+@
+
+
+\section{Random Forest}
+
+In terms of the Random Forest we want to investigate the influence of the $m$ parameter - number of features selected randomly sampled as candidates at each split. Will consider the forest of $10$ trees. We will see how reduction of number of the most important features included in each tree impacts the performance of the model. Since in feature selection we consider 200 best features, we will examine the range of the $m$ parameter from $25$ to $200$. From the plot of misclassification errors (\ref{fig:rf_m_plot}) we can see that we obtain the best model for $m=175$. However, we can  notice that the choice of the $m$ parameter does not destabilize the model strongly.
+
+In the graph (\ref{fig:rf_m_plot_random}) for random features we see that we get the lowest validation error for maximum value of the $m$ parameter, $m=200$. Again, the model with random features seems to perform worse.
+
+<<rf_m_selection_func, echo=FALSE>>=
+errors_ms_rf <- function(ms, learning_set, selected_features=NULL, presel=40, ntree=10) {
+  learning_set$class <- as.factor(learning_set$class)
+  size <- nrow(learning_set) 
+  ms_train_errors <- matrix(nrow=size, ncol=length(ms))
+  ms_validation_errors <- matrix(nrow=size, ncol=length(ms))
+  for (i in 1:size) {
+    validation_set <- learning_set[i,]
+    train_set <- learning_set[-i,]
+    # data standarization
+    dataTransform <- preProcess(train_set[,-5598], method=c("center", "scale"))
+    train_set[,-5598] <- predict(dataTransform, train_set[,-5598])
+    validation_set[,-5598]  <- predict(dataTransform, validation_set[,-5598])
+    
+    if (is.null(selected_features)) {
+      selected_features <- c()
+      for (j in 0:4) {
+        ylearn.tumor.type.k <- ifelse(train_set[,5598]==j,1,0) # one-vs-rest encoding
+        selected_features_k <- feature.preselection(train_set[,-5598], ylearn.tumor.type.k, presel)$genes
+        selected_features <- c(selected_features, selected_features_k)
+      }
+      selected_features <- unique(selected_features)
+    }
+    
+    for (j in 1:length(ms)){
+      m = ms[j]
+      xnam <- paste0("V", selected_features)
+      (fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+      selected_features_and_class <- c(selected_features, 5598)
+      model <- randomForest(fmla, data=train_set[,selected_features_and_class], ntree=ntree, mtry=m)
+      # predictions
+      train_prediction <- predict(model, train_set[,selected_features_and_class], type = "class")
+      validation_prediction <- predict(model, validation_set[,selected_features_and_class], type = "class")
+      # classification error
+      train_error <- mean(train_prediction != train_set[,5598])
+      validation_error <- mean(validation_prediction != validation_set[,5598])
+      
+      ms_train_errors[i, j] <- train_error
+      ms_validation_errors[i, j] <- validation_error
+    }
+  }
+  errors <- list("train_errors"= ms_train_errors, "validation_errors"= ms_validation_errors)
+  return(errors)
+}
+@
+
+<<rf_m_selection, cache=TRUE, echo=FALSE, warning=FALSE>>=
+ms <- c(25, 50, 75, 100, 125, 150, 175, 200)
+
+errors_rf <- errors_ms_rf(ms, learningSet, selected_features=NULL, presel=40, ntree=10)
+mean_train_errors_rf <- apply(errors_rf$train_errors, 2, mean)
+mean_validation_errors_rf <- apply(errors_rf$validation_errors, 2, mean)
+
+mean_errors_ms_rf <- data.frame(t(rbind(ms, mean_train_errors_rf, mean_validation_errors_rf)))
+colnames(mean_errors_ms_rf) <- c("m", "train", "validation")
+@
+
+
+<<rf_m_plot, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the Random Forest">>=
+# train and validation errors for different values of m
+errors_ms_plot_rf <- ggplot(data = mean_errors_ms_rf, aes(x = m)) +
+  geom_line(aes(y = train, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5, size=18)) +
+  labs(title = "Misclassification error for the Random Forest model", x = "m", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = seq(min(mean_errors_ms_rf$m), max(mean_errors_ms_rf$m), by = 25))
+
+errors_ms_plot_rf # best for k=1
+@
+
+<<rf_final_func, echo=FALSE>>=
+# final model with chosen m and features chosen from the whole learning set - learning error and test error
+final_rf_model_errors <- function(learning_set, test_set, m, given_features= NULL, presel=40, ntree=10) {
+  learning_set$class <- as.factor(learning_set$class)
+  # data standarization
+  dataTransform <- preProcess(learning_set[,-5598], method=c("center", "scale"))
+  test_set[,-5598] <- predict(dataTransform, test_set[,-5598])
+  learning_set[,-5598]  <- predict(dataTransform, learning_set[,-5598])
+  
+  # selecting best features, if not specified
+  if (is.null(given_features)) {
+    selected_features <- c()
+    for (j in 0:4) {
+      ylearn.tumor.type.k <- ifelse(learning_set[,5598]==j,1,0) # one-vs-rest encoding
+      selected_features_k <- feature.preselection(learning_set[,-5598], ylearn.tumor.type.k, presel)$genes
+      selected_features <- c(selected_features, selected_features_k)
+    }
+    selected_features <- unique(selected_features)
+  } else {
+    selected_features <- given_features
+  }
+  
+  # train the model
+  xnam <- paste0("V", selected_features)
+  (fmla <- as.formula(paste("class ~ ", paste(xnam, collapse= "+"))))
+  selected_features_and_class <- c(selected_features, 5598)
+  model <- randomForest(fmla, data=learning_set[,selected_features_and_class], ntree=ntree, mtry=m)
+  # predictions
+  learning_prediction <- predict(model, learning_set[,selected_features], type="class")
+  test_prediction <- predict(model, test_set[,selected_features], type="class")
+  # classification error
+  learning_error <- mean(learning_prediction != learning_set[,5598])
+  test_error <- mean(test_prediction != test_set[,5598])
+  # confusion matrix
+  learning_confusion_matrix <- table(learning_prediction, learning_set[,5598])
+  test_confusion_matrix <- table(test_prediction, test_set[,5598])
+  
+  results <- list("learning_error"=learning_error, "test_error"=test_error, 
+                  "learning_conf"=learning_confusion_matrix, "test_conf"=test_confusion_matrix)
+  return(results)
+}
+@
+
+<<rf_final, cache=TRUE, include=FALSE>>=
+rf_model_errors <- final_rf_model_errors(learningSet, testSet, m=175, presel=40, ntree=10)
+rf_model_errors
+@
+
+<<rf_m_selection_random, cache=TRUE, echo=FALSE, warning=FALSE>>=
+errors_rf_random <- errors_ms_rf(ms, learningSet, selected_features=random_selected_features, ntree=10)
+mean_train_errors_rf_random <- apply(errors_rf_random$train_errors, 2, mean)
+mean_validation_errors_rf_random <- apply(errors_rf_random$validation_errors, 2, mean)
+
+mean_errors_ms_rf_random <- data.frame(t(rbind(ms, mean_train_errors_rf_random, mean_validation_errors_rf_random)))
+colnames(mean_errors_ms_rf_random) <- c("m", "train", "validation")
+@
+
+<<rf_m_plot_random, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Misclassification errors for train set and validation set for the Random Forest on random features">>=
+# train and validation errors for different values of m
+errors_ms_plot_rf_random <- ggplot(data = mean_errors_ms_rf_random, aes(x = m)) +
+  geom_line(aes(y = train, color = "train"), size = 1.2) +
+  geom_line(aes(y = validation, color = "validation"), size = 1.2) +
+  theme(plot.title = element_text(hjust = 0.5, size=18)) +
+  labs(title = "Misclassification error for the Random Forest model \n on random features", x = "m", y = "misclassification error") +
+  scale_color_manual(name = "Dataset", values = c("train" = "blue", "validation" = "red")) +
+  scale_x_continuous(breaks = seq(min(mean_errors_ms_rf_random$m), max(mean_errors_ms_rf_random$m), by = 25))
+
+errors_ms_plot_rf_random # best for k=1
+@
+
+<<rf_final_random, cache=TRUE, include=FALSE>>=
+rf_model_errors_random <- final_rf_model_errors(learningSet, testSet, m=175, given_features = random_selected_features, ntree=10)
+rf_model_errors_random
+@
+
+\section{Comparison of the models}
+
+In previous sections we have chosen the models with their parameters. Now we will train them on previously generated learning set and evaluate them on the test set. For each model we will compare the performance with feature selection and without. From the table (\ref{tab:compare_tab_learning}) we can read that there are no differences between models in terms of fitting the learning set - all errors are equal to $0$. However, the most important thing for us is the generalization ability and performance on the test set. Comparing the misclassification errors on the test set (\ref{tab:compare_tab_test}) we can see that all models with feature selection, with Multinomial Logistic Regression in the lead,  performed quite well in our case. We can also see positive impact of future selection procedure for the Decision Tree and Random Forest.
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c| } 
+\hline
+model & feature selection & no feature selection \\
+\hline
+K Nearest Neighbors & \Sexpr{knn_model_errors$learning_error} & \Sexpr{knn_model_errors_random$learning_error} \\ 
+Multinomial Logistic Regression & \Sexpr{mlr_model_errors$learning_error} & \Sexpr{mlr_model_errors_random$learning_error} \\ 
+Decision Tree & \Sexpr{dt_model_errors$learning_error} & \Sexpr{dt_model_errors_random$learning_error} \\ 
+Random Forest & \Sexpr{rf_model_errors$learning_error} & \Sexpr{rf_model_errors_random$learning_error} \\ 
+\hline
+\end{tabular}
+\caption{Misclassification errors on the train set for different classification models}
+\label{tab:compare_tab_learning}
+\end{table}
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c| } 
+\hline
+model & feature selection & no feature selection \\
+\hline
+K Nearest Neighbors & \Sexpr{knn_model_errors$test_error} & \Sexpr{knn_model_errors_random$test_error} \\ 
+Multinomial Logistic Regression & \Sexpr{mlr_model_errors$test_error} & \Sexpr{mlr_model_errors_random$test_error} \\ 
+Decision Tree & \Sexpr{dt_model_errors$test_error} & \Sexpr{dt_model_errors_random$test_error} \\ 
+Random Forest & \Sexpr{rf_model_errors$test_error} & \Sexpr{rf_model_errors_random$test_error} \\ 
+\hline
+\end{tabular}
+\caption{Misclassification errors on the test set for different classification models.}
+\label{tab:compare_tab_test}
+\end{table}
+
+We would like to address the class imbalance problem that we had in our data. Since we have multiclass classification problem, we will investigate the macro-averaged F1 score. It is computed by taking the arithmetic mean of all the per-class F1 scores. This method treats all classes equally regardless of their support values. Error in classification in each class has the same negative impact. The model with the highest score is the Multinomial Logistic Regression with feature selection and the lowest is for the Decision Tree without feature selection (\ref{tab:compare_tab_test_f1}). The Multinomial Logistic Regression model not only got the lowest error on given test set but also performed the best in terms of dealing with the imbalance class problem. Overall, all models with feature selection got quite good results. We got one NA value which may be caused e.g. by lack of predictions for one class.
+
+<<F1_func, include=FALSE>>=
+class_metrics <- function(conf_matrix, class_idx) {
+  true_positives <- conf_matrix[class_idx, class_idx]
+  false_positives <- sum(conf_matrix[, class_idx]) - true_positives
+  false_negatives <- sum(conf_matrix[class_idx, ]) - true_positives
+  
+  precision <- true_positives / (true_positives + false_positives)
+  recall <- true_positives / (true_positives + false_negatives)
+  
+  # Avoid division by zero and calculate F1 score
+  f1_score <- ifelse((precision + recall) == 0, 0, 2 * precision * recall / (precision + recall))
+  
+  return(list(precision = precision, recall = recall, f1_score = f1_score))
+}
+
+# Function to calculate macro-averaged F1 score from a confusion matrix
+macro_avg_f1_score <- function(conf_matrix) {
+  num_classes <- nrow(conf_matrix)
+  f1_scores <- numeric(num_classes)
+  
+  # Calculate F1 score for each class
+  for (class_idx in 1:num_classes) {
+    metrics <- class_metrics(conf_matrix, class_idx)
+    f1_scores[class_idx] <- metrics$f1_score
+  }
+  
+  # Calculate macro-averaged F1 score
+  macro_avg_f1 <- mean(f1_scores)
+  
+  return(macro_avg_f1)
+}
+@
+
+<<F1, cache=TRUE, include=FALSE>>=
+f1_knn <- macro_avg_f1_score(knn_model_errors$test_conf)
+f1_knn_random <- macro_avg_f1_score(knn_model_errors_random$test_conf)
+f1_mlr <- macro_avg_f1_score(mlr_model_errors$test_conf)
+f1_mlr_random <- macro_avg_f1_score(mlr_model_errors_random$test_conf)
+f1_dt <- macro_avg_f1_score(dt_model_errors$test_conf)
+f1_dt_random <- macro_avg_f1_score(dt_model_errors_random$test_conf)
+f1_rf <- macro_avg_f1_score(rf_model_errors$test_conf)
+f1_rf_random <- macro_avg_f1_score(rf_model_errors_random$test_conf)
+@
+
+
+\begin{table}
+\centering
+\begin{tabular}{ |c|c|c| } 
+\hline
+model & feature selection & no feature selection \\
+\hline
+K Nearest Neighbors & \Sexpr{f1_knn} & \Sexpr{f1_knn_random} \\ 
+Multinomial Logistic Regression & \Sexpr{f1_mlr} & \Sexpr{f1_mlr_random} \\ 
+Decision Tree & \Sexpr{f1_dt} & \Sexpr{f1_dt_random} \\ 
+Random Forest & \Sexpr{f1_rf} & \Sexpr{f1_rf_random} \\ 
+\hline
+\end{tabular}
+\caption{Macro-averaged F1 score on the train set.}
+\label{tab:compare_tab_test_f1}
+\end{table}
+
+We are also interested in stability of chosen models. We will iteratively generate 100 learning and test subsets and perform model fitting. The misclassification errors are visualized on the boxplots (\ref{fig:compare_plot_learning}, \ref{fig:compare_plot_test}). We can see that all models but Random Forest fitted the train sets ideally, resulting in errors equal to 0. We can conclude that the k-NN algorithm seems to have the lowest mean error. On the other hand, the one that performs the worst is the Decision Tree. The algorithm with the lowest dispersion and therefore the most stable is the k-NN. The performance of the Multinomial Logistic Regression and Random Forest is approximately the same in terms of stability.
+
+<<compare, cache=TRUE, include=FALSE, warning=FALSE>>=
+set.seed(Sys.time())
+errors_learning_knn <- c()
+errors_test_knn <- c()
+errors_learning_knn_random <- c()
+errors_test_knn_random <- c()
+errors_learning_mlr <- c()
+errors_test_mlr <- c()
+errors_learning_dt <- c()
+errors_test_dt <- c()
+errors_learning_rf <- c()
+errors_test_rf <- c()
+for (n in 1:100){
+  inLearning_split <- createDataPartition(y=data$class, times=1, p=2/3, list=FALSE) # class imbalance problem taken care of defaultly - stratify
+  learningSet_split <- data[inLearning_split,]
+  testSet_split <- data[-inLearning_split,]
+  
+  # feature selection
+  best_features <- c()
+  for (j in 0:4) {
+    ylearn.tumor.type.k <- ifelse(learningSet_split[,5598]==j,1,0) # one-vs-rest encoding
+    selected_features_k <- feature.preselection(learningSet_split[,-5598], ylearn.tumor.type.k, presel=40)$genes
+    best_features <- c(best_features, selected_features_k)
+    }
+  best_features <- unique(best_features)
+  
+  #kNN
+  knn_model_errors <- final_knn_model_errors(learningSet_split, testSet_split, k=1, given_features=best_features)
+  errors_learning_knn <- c(errors_learning_knn, knn_model_errors$learning_error)
+  errors_test_knn <- c(errors_test_knn, knn_model_errors$test_error)
+  
+  #kNN random subset of features
+  knn_model_errors_random <- final_knn_model_errors(learningSet_split, testSet_split, k=1, given_features=random_selected_features)
+  errors_learning_knn_random <- c(errors_learning_knn_random, knn_model_errors_random$learning_error)
+  errors_test_knn_random <- c(errors_test_knn_random, knn_model_errors_random$test_error)
+  
+  #mlr
+  mlr_model_errors <- final_mlr_model_errors(learningSet_split, testSet_split, selected_features=sample(best_features, 50))
+  errors_learning_mlr <- c(errors_learning_mlr, mlr_model_errors$learning_error)
+  errors_test_mlr <- c(errors_test_mlr, mlr_model_errors$test_error)
+  
+  #Decision Tree
+  dt_model_errors <- final_dt_model_errors(learningSet_split, testSet_split, cp=0.02, given_features=best_features)
+  errors_learning_dt <- c(errors_learning_dt, dt_model_errors$learning_error)
+  errors_test_dt <- c(errors_test_dt, dt_model_errors$test_error)
+  
+  #Random Forest
+  rf_model_errors <- final_rf_model_errors(learningSet_split, testSet_split, m=175, given_features=best_features, ntree=10)
+  errors_learning_rf <- c(errors_learning_rf, rf_model_errors$learning_error)
+  errors_test_rf <- c(errors_test_rf, rf_model_errors$test_error)
+}
+set.seed(42)
+@
+
+<<compare_plot, include=FALSE, cache=FALSE>>=
+compared_errors <- data.frame(do.call("cbind", list(errors_learning_knn, errors_test_knn,
+                                                    errors_learning_knn_random, errors_test_knn_random,
+                                                    errors_learning_mlr, errors_test_mlr,
+                                                    errors_learning_dt, errors_test_dt,
+                                                    errors_learning_rf, errors_test_rf)))
+colnames(compared_errors) <- c("knn_learning", "knn_test",
+                               "knn_learning_random", "knn_test_random",
+                               "mlr_learning", "mlr_test",
+                               "dt_learning", "dt_test",
+                               "rf_learning", "rf_test")
+
+gathered_data_compared <- compared_errors %>%
+  gather(key = "variable", value = "value")
+
+# Create a boxplot of all features on one graph
+colorder <- colnames(compared_errors)
+compared_errors_plot <- ggplot(gathered_data_compared, aes(x = variable, y = value)) +
+  geom_boxplot(fill="steelblue", alpha=0.8) +
+  ggtitle("Boxplots of missclassification errors") +
+  theme(plot.title=element_text(hjust=0.5, size=18), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_x_discrete(limits=colorder,labels=c("kNN learning","kNN test","kNN learning random","kNN test random", "MLR learning","MLR test", 
+                                            "Decision Tree learning", "Decision Tree test", "Random Forest learning", "Random Forest test"))
+compared_errors_plot
+@
+
+
+<<compare_plot_learning, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Boxplots of misclassification errors on the train set for different models">>=
+compared_errors_learning <- compared_errors[,c("knn_learning", "mlr_learning", "dt_learning", "rf_learning")]
+
+gathered_data_compared_learning <- compared_errors_learning %>%
+  gather(key = "variable", value = "value")
+
+# Create a boxplot of all features on one graph
+colorder <- colnames(compared_errors_learning)
+compared_errors_plot_learning <- ggplot(gathered_data_compared_learning, aes(x = variable, y = value)) +
+  geom_boxplot(fill="steelblue", alpha=0.8) +
+  ggtitle("Boxplots of missclassification errors on the train set") +
+  theme(plot.title=element_text(hjust=0.5, size=18), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_x_discrete(limits=colorder,labels=c("kNN","Multinomial Logistic Regression", "Decision Tree", "Random Forest"))
+compared_errors_plot_learning
+@
+
+
+<<compare_plot_test, echo=FALSE, cache=FALSE, fig.align="center", fig.cap="Boxplots of misclassification errors on the test set for different models">>=
+compared_errors_test <- compared_errors[,c("knn_test", "mlr_test", "dt_test", "rf_test")]
+
+gathered_data_compared_test <- compared_errors_test %>%
+  gather(key = "variable", value = "value")
+
+# Create a boxplot of all features on one graph
+colorder <- colnames(compared_errors_test)
+compared_errors_plot_test <- ggplot(gathered_data_compared_test, aes(x = variable, y = value)) +
+  geom_boxplot(fill="steelblue", alpha=0.8) +
+  ggtitle("Boxplots of missclassification errors on the test set") +
+  theme(plot.title=element_text(hjust=0.5, size=18), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_x_discrete(limits=colorder,labels=c("kNN","Multinomial Logistic Regression", "Decision Tree", "Random Forest"))
+compared_errors_plot_test
+@
+
+
+
+
+
+
+
+\chapter{Stability of feature selection method}
+
+We would like to investigate the stability of chosen feature selection model described in section \ref{ch:feature_preselection}. We can do it by looking at the graph \ref{fig:feature_sel_stab_plot} based on selecting 40 best features for each class via leave-one-out cross-validation on the learning set. We can observe that some features have been selected significantly more often then others. What is more, the majority of features has been selected only few times. We can conclude that the algorithm is not stable in our case. 
+
+<<feature_sel_stab, include=FALSE, cache=TRUE>>=
+# LOO CV 
+size <- nrow(learningSet)
+list_of_selected_features <- list()
+for (i in 1:size) {
+  print(i)
+  selected_features <- c()
+  train_set <- learningSet[-i,]
+  # data standarization
+  dataTransform <- preProcess(train_set[,-5598], method=c("center", "scale"))
+  train_set[,-5598]  <- predict(dataTransform, train_set[,-5598])
+  for (j in 0:4) {
+    ylearn.tumor.type.k <- ifelse(train_set[,5598]==j,1,0) # one-vs-rest encoding
+    selected_features_k <- feature.preselection(train_set[,-5598], ylearn.tumor.type.k, presel=40)$genes
+    selected_features <- c(selected_features, selected_features_k)
+  }
+  list_of_selected_features <- c(list_of_selected_features, unique(selected_features))
+}
+
+df_features <- as.data.frame(table(unlist(list_of_selected_features)))
+df_features$Var1 <- factor(df_features$Var1, levels = df_features$Var1[rev(order(df_features$Freq))])
+@
+
+<<feature_sel_stab_plot, echo=FALSE, cache=TRUE, fig.align="center", fig.cap="Frequency of choosing each feature">>=
+ggplot(data=df_features, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue", alpha=0.8)+
+  ggtitle("Frequency of selected features") +
+  theme(plot.title=element_text(hjust=0.5, size=18)) +
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank()) +
+  labs(x="Feature", y="Number of occurences")
+
+@
+
+\chapter{Conclusions}
+We conclude that the feature selection method is not stable. However, we observe that in general models with feature selection tend to perform better that the ones without, which indicates its usefulness.
+
+From exploratory data analysis on the 20 most important features we were able to investigate the distribution of each of them, formulate assumptions about their normality or uniformity and verify those assumptions with help of statistical tests. We also checked potential discriminative ability of selected features.
+
+Even though our data has $p \gg n$ problem and class imbalance problem we were able to construct models that gave us satisfying results in terms of the misclassification error and macro-averaged F1 score. Overall, the method that performed the best in our case in terms of accuracy and stability is the K Nearest Neighbors algorithm with $k=1$ and features selected with help of the proposed feature selection procedure. The Random Forest with $m=175$ and Multinomial Logistic Regression gave us slightly bigger errors, but still we consider them as better algorithms than the Decision Tree with $cp=0.02$, minsplit = 1, minbucket = 1. We rejected LDA and QDA algorithms. After analysis we conclude that these are not appropriate approaches for our data.
+
+
+
+\chapter{Further research suggestions}
+In the realm of microarray data analysis and classification, exploring new methods for selecting a few marker components of the gene subset that determine the type of tumor is worth investigating. Moreover, the feature preselection algorithm employed in the project can be evaluated not only in comparison to models with randomly chosen features but also to models trained on all 5597 features. While computationally demanding, this approach will yield explicit results regarding the usefulness of the method.
+
+Furthermore, it might be beneficial to consider additional algorithms such as SVM, neural networks, etc. The algorithms already used in the project can be further investigated, employing leave-one-out cross-validation while exploring a grid of more than one parameter.
+
+Addressing the class imbalance problem, specific procedures like oversampling can be applied and examined.
+
+In medical diagnostics, the classification of tumor types can be widely used to provide an additional perspective to professionals. The models developed and the analysis conducted can be instrumental in further research, offering new data-driven perspectives on today's medicine.
+
+\chapter{Bibliography}
+
+\begin{itemize}
+\item [1] Marcel Dettling and Peter Buhlmann, Boosting for tumor classification with gene
+expression data, Seminar fur Statistik, ETH Zurich, CH-8092, Switzerland.
+\item [2] Büyüköztürk, Çokluk-Bökeoğlu (2008). Discriminant function analysis: Concept and application. Egitim Arastirmalari - Eurasian Journal of Educational Research, 33, 73-92.
+\end{itemize}
+
+
+\end{document}
